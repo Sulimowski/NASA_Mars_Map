@@ -30,7 +30,7 @@ from mars_map.fusion.derived import reachable_mask, snap_to  # noqa: E402
 from mars_map.fusion.science import MINERAL_NAMES, mineral_targets, pick_base  # noqa: E402
 from mars_map.grid import REGIONS  # noqa: E402
 from mars_map.ingest.fetch import FetchError  # noqa: E402
-from mars_map.ingest.rover import curiosity_stops, curiosity_track, surface_image  # noqa: E402
+from mars_map.ingest.rover import rover_for, rover_stops, rover_track, surface_image  # noqa: E402
 
 CLASS_CMAP = ListedColormap(["#c9b18f", "#f2d36b", "#8a5a44", "#222222"])
 MINERAL_CMAP = ListedColormap(["#e8e4dc", "#e6c229", "#f17105", "#2a9d8f", "#3a86ff", "#8338ec",
@@ -38,20 +38,23 @@ MINERAL_CMAP = ListedColormap(["#e8e4dc", "#e6c229", "#f17105", "#2a9d8f", "#3a8
 
 
 def rover_targets(grid, max_stops=4, min_sols=10):
-    """Curiosity's longest stops in the region as targets, with a photo taken there."""
+    """The rover's longest stops in the region as targets, with a photo taken there."""
+    rover = rover_for(grid)
+    if rover is None:
+        return [], []
     try:
-        stops = curiosity_stops(grid, min_sols=min_sols)[:max_stops]
-        track = curiosity_track(grid)
+        stops = rover_stops(grid, min_sols=min_sols)[:max_stops]
+        track = rover_track(grid)
     except FetchError as e:
         print(f"  rover track unavailable: {e}")
         return [], []
     out = []
     for i, s in enumerate(stops):
-        photo = surface_image(s.sol, s.sol + s.sols_here)
-        note = f"Curiosity worked here for {s.sols_here} sols (sol {s.sol} to {s.sol + s.sols_here})."
+        photo = surface_image(s.sol, s.sol + s.sols_here, rover=rover)
+        note = f"{rover.name} worked here for {s.sols_here} sols (sol {s.sol} to {s.sol + s.sols_here})."
         if photo:
             note += f" Photo from the spot: {photo}"
-        out.append(Target(f"Curiosity stop, sol {s.sol}", round(s.x_m, 1), round(s.y_m, 1),
+        out.append(Target(f"{rover.name} stop, sol {s.sol}", round(s.x_m, 1), round(s.y_m, 1),
                           priority=1 if i < 2 else 2, dwell_min=40, note=note))
     return out, track
 
@@ -126,7 +129,7 @@ def figure(site, track, path):
         if track:
             ax.plot([t.x_m for t in track], [t.y_m for t in track], color="cyan", lw=0.8, alpha=0.9)
         for t in site.targets:
-            rover = t.name.startswith("Curiosity")
+            rover = " stop, sol " in t.name
             ax.plot(t.x_m, t.y_m, marker="*" if rover else "D", color="white" if rover else "yellow",
                     ms=11 if rover else 6, mec="k")
         ax.plot(*site.start, marker="^", color="lime", ms=10, mec="k")
@@ -138,8 +141,8 @@ def figure(site, track, path):
     for ax in axes.flat[len(panels):]:
         ax.axis("off")
     fig.suptitle(f"{site.name}  |  {site.resolution_m} m/px, {w:.0f}x{h:.0f} m  |  centre "
-                 f"{site.center_lat:.3f}N {site.center_lon:.3f}E  |  ^ base, * Curiosity stops, "
-                 f"diamonds = mineral targets, cyan = Curiosity track", fontsize=12)
+                 f"{site.center_lat:.3f}N {site.center_lon:.3f}E  |  ^ base, * rover stops, "
+                 f"diamonds = mineral targets, cyan = rover track", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=80)
     plt.close(fig)

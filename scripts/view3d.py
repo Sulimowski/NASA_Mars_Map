@@ -176,12 +176,30 @@ def build_layers(site: Site) -> tuple[str, str, list[dict]]:
         from mars_map.fusion.science import MINERAL_NAMES
         cat("mineral_dominant", "Dominant mineral", "Science", MINERAL_COLORS, MINERAL_NAMES,
             note="Which mineral group has the clearest CRISM signature. Transparent = none detected.")
-    for key, title in (("mineral_sulfate", "Sulfate index"), ("mineral_hydration", "Hydration index"),
-                       ("mineral_clay", "Clay index"), ("mineral_silica", "Silica index")):
+    from mars_map.fusion.science import DETECTION
+    for key, title in (("mineral_sulfate", "Sulfate index"), ("mineral_sulfate_mono", "Monohydrated sulfate index"),
+                       ("mineral_hydration", "Hydration index"), ("mineral_clay", "Clay index"),
+                       ("mineral_silica", "Silica index"), ("mineral_hematite", "Hematite index"),
+                       ("mineral_olivine", "Olivine index"), ("mineral_pyroxene", "Pyroxene index")):
         if key in L:
-            hi = float(np.nanpercentile(L[key], 99.5))
-            cont(key, title, "Science", "viridis", "index", vmin=0, vmax=max(hi, 1e-6), fmt=".3f",
-                 note="CRISM spectral index, unitless. Higher = stronger signature, noisy near zero.")
+            lo_, hi_ = DETECTION[key]          # same colour scale in every region
+            cont(key, title, "Science", "viridis", "index", vmin=lo_, vmax=hi_, fmt=".3f",
+                 alpha=np.clip((np.nan_to_num(L[key], nan=lo_) - lo_) / (hi_ - lo_) * 4, 0, 1),
+                 note="CRISM spectral index, unitless. The scale runs from the detection threshold to a "
+                      "strong signature and is the same for every region. Transparent = below the threshold.")
+
+    # --- other measurements ------------------------------------------------------
+    cont("roughness", "Roughness", "Terrain", "cividis", "m", lo=0, hi=99, fmt=".2f",
+         note="Local relief: spread of elevation in a ~7 m window.")
+    cont("themis_night_ir", "Night infrared", "Surface", "inferno", "DN", fmt=".0f",
+         note="THEMIS night-time brightness, 100 m per pixel. Bright = warm at night = rock.")
+    cont("themis_day_ir", "Day infrared", "Surface", "inferno", "DN", fmt=".0f",
+         note="THEMIS day-time brightness, 100 m per pixel. Mostly shows sunlit and shaded slopes.")
+    cont("albedo", "Albedo", "Surface", "gray", "0..1", fmt=".2f",
+         note="TES, 7.4 km per pixel: one value for a site this small. Bright = dust, dark = sand or rock.")
+    if "source_res" in L:
+        cont("source_res", "Elevation source", "Data", "viridis_r", "m per pixel", fmt=".0f",
+             note="Resolution of the terrain model each cell came from. Higher = coarser data.")
     return encode(base), caption, out
 
 
@@ -257,7 +275,7 @@ def build(folder: Path) -> Path:
     targets = []
     for t in site.targets:
         url = re.search(r"https?://\S+", t.note or "")
-        kind = "rover" if t.name.lower().startswith("curiosity") else (
+        kind = "rover" if " stop, sol " in t.name.lower() else (
             "mineral" if "exposure" in t.name.lower() else "site")
         targets.append({"name": t.name, "x": t.x_m, "y": t.y_m, "priority": t.priority, "dwell": t.dwell_min,
                         "kind": kind, "photo": url.group(0).rstrip(".") if url else None,

@@ -37,8 +37,10 @@ SOURCES = {
 # STAC collection -> list of (source, kind, asset key, resolution if `gsd` is not the right one)
 STAC_COLLECTIONS = {
     # heights above the areoid (same datum as MOLA and the HiRISE DTMs)
-    "mro_ctx_controlled_usgs_dtms": [("ctx_dtm", "dtm", "geoid_adjusted_dem", None),
-                                     ("ctx_optical", "optical", "orthoimage", 6.0)],
+    # The asset key is not the same across the collection: "geoid_adjusted_dem" around
+    # Gale, plain "dtm" around Jezero. Both are metres above the areoid (checked against MOLA).
+    "mro_ctx_controlled_usgs_dtms": [("ctx_dtm", "dtm", ("geoid_adjusted_dem", "dtm"), None),
+                                     ("ctx_optical", "optical", "orthoimage", None)],
     "mro_hirise_uncontrolled_observations": [("hirise_optical", "optical", "image", None)],
     "mo_themis_controlled_mosaics": [("themis", "thermal", "image", None)],
 }
@@ -159,7 +161,8 @@ def load_stac(db: sqlite3.Connection, collection: str, bbox: BBox, max_items: in
                 continue
             props = f.get("properties", {})
             for source, kind, asset, res in targets:
-                a = f.get("assets", {}).get(asset)
+                keys = (asset,) if isinstance(asset, str) else asset
+                a = next((f["assets"][k] for k in keys if k in f.get("assets", {})), None)
                 if not a:
                     continue
                 rows[source].append({
