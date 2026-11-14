@@ -12,6 +12,18 @@
       "detail": "The map covers 2 × 2 km at 2 m per pixel, with 458 m of relief. It has 31 data layers, 8 science targets and 3 walking plans.",
       "viewer": "../data/gale_boxwork/view3d.html",
       "plans": "samples/gale_boxwork/eva_plans.json"
+    },
+    {
+      "id": "jezero_delta",
+      "name": "Jezero Crater",
+      "place": "River delta, Perseverance site",
+      "lat": 18.458,
+      "lon": 77.402,
+      "status": "ready",
+      "summary": "The fan of an ancient river delta on the floor of Jezero crater, where Perseverance collects rock samples for return to Earth.",
+      "detail": "The map covers 2 × 2 km at 2 m per pixel, with 121 m of relief. It has 28 data layers, 7 science targets and 3 walking plans.",
+      "viewer": "../data/jezero_delta/view3d.html",
+      "plans": "../data/jezero_delta/eva_plans.json"
     }
   ],
   "features": [
