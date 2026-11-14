@@ -1,22 +1,26 @@
-# Data branch — data extraction and the multi-layer map
+# Martian Map — real Mars data, an EVA planner and a 3D view
 
-This branch turns raw NASA data into one `Site` object: a stack of map layers on one grid,
-plus weather and radiation series, a base and science targets. It is the format the `Alg`
-branch already works with (see [`DATA_CONTRACT.md`](DATA_CONTRACT.md)).
+Three parts that run one after another:
 
-**Status (2026-11-14):** the first target from `main` is met on real data. There is a real
-`Site` for the boxwork area of Gale crater with elevation, radiation and minerals, ready for
-`Alg` (routing) and `GUI` (3D view). The pipeline is not Gale-only: two more regions,
-`jezero_delta` and `nili_planum`, are built from real data with the same commands
-(see [Regions](#regions)).
+1. **Data** turns raw NASA data into a `Site`: a stack of map layers on one grid, plus weather
+   and radiation series, a base and science targets ([`DATA_CONTRACT.md`](DATA_CONTRACT.md)).
+2. **The EVA planner** takes a `Site` and plans an astronaut's walk: three alternative routes
+   with time, oxygen, battery and dose, checked by a physiology simulator
+   ([`EVA_PLANNER.md`](EVA_PLANNER.md), [`ENV_MAPS.md`](ENV_MAPS.md)).
+3. **The 3D view** shows the site, every layer and the three routes in one HTML page.
+
+**Status (2026-11-14):** all three work together on real data for three regions:
+`gale_boxwork`, `jezero_delta` and `nili_planum` (see [Regions](#regions)).
 
 ## Quick start
 
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python scripts\ingest_region.py --rad-sols 4640-4669
-.venv\Scripts\python scripts\build_site.py
+.venv\Scripts\python scripts\ingest_region.py --rad-sols 4640-4669    # 1. data
+.venv\Scripts\python scripts\build_site.py                            # 1. fuse into a Site
+.venv\Scripts\python -m mars_map.pipeline --site data/gale_boxwork --sol 4650   # 2. plan the EVA
+.venv\Scripts\python scripts\view3d.py --open                          # 3. the map with the routes
 ```
 
 - `ingest_region.py` downloads real data for the region: about 650 MB of traffic (540 MB of it
@@ -30,6 +34,8 @@ python -m venv .venv
   ```bash
   .venv\Scripts\python scripts\ingest_region.py --region jezero_delta --rad-sols ""
   .venv\Scripts\python scripts\build_site.py --region jezero_delta
+  .venv\Scripts\python -m mars_map.pipeline --site data/jezero_delta
+  .venv\Scripts\python scripts\view3d.py data/jezero_delta --open
   ```
 
   `--rad-sols ""` skips radiation, which exists only near Gale. A Jezero region takes a few
@@ -67,8 +73,12 @@ in 3D and every layer draped over it. Open it in a browser, or send the file to 
 - Drag to orbit, right-drag to pan, wheel to zoom, `H` hides the sheets.
 
 Shown automatically when present:
-- `data/<site>/astronaut_plan.json`, the route written by the `Alg` router (distance, time,
-  oxygen, battery, dose, GO / NO-GO);
+- `data/<site>/eva_plans.json`, the three plans written by the EVA planner. The "EVA plan"
+  box has a tab per strategy (shielded, eco, science); a tab switches the route on the map
+  and its numbers (distance, time, climb, oxygen, battery, dose), the targets left out, the
+  radio shadow and the physiology verdict. The stamp says NO-GO when a limit is exceeded or
+  the physiology check fails. Run the planner before `view3d.py`: the page is built from
+  the files that exist at that moment;
 - the rover's track, for regions a rover drove through (Curiosity in Gale, Perseverance in
   Jezero and Nili Planum).
 
@@ -80,29 +90,53 @@ Checked through a local server (`--serve`) in a desktop browser. If opening the 
 double-click shows a blank page in your browser, use `--serve`. The page template is
 [`mars_map/viewer/template.html`](mars_map/viewer/template.html).
 
-## Giving the real site to `Alg` and `GUI`
+## EVA planner on the real sites
 
-The site is two files, `layers.npz` and `site.json` (68 MB together). `data/` is not in git,
-so there are two ways to get it:
+```bash
+.venv\Scripts\python -m mars_map.pipeline --site data/gale_boxwork --sol 4650
+```
 
-1. **Build it yourself**: the two commands in the quick start. Needs this branch's code.
-2. **Take the ready folder**: unzip `gale_boxwork_site.zip` into `data/` so that
-   `data/gale_boxwork/site.json` exists. Needs only `mars_map/site.py`, which `Alg` already
-   has, so no merge is required. The zip is made with:
+Writes `eva_plans.json` and `eva_plans.png` into the site folder, about 10–20 s per site.
+`--sol` must be a sol the site has series for; without it the first one is used. How it
+works: [`EVA_PLANNER.md`](EVA_PLANNER.md).
 
-   ```bash
-   powershell Compress-Archive data\gale_boxwork\layers.npz,data\gale_boxwork\site.json data\gale_boxwork_site.zip
-   ```
+Results on 2026-11-14 (distance, time, dose; physiology verdict):
 
-Then `Site.load("data/gale_boxwork")` works exactly like the stub.
+| Site, sol | shielded | eco | science |
+|---|---|---|---|
+| `gale_boxwork`, 4650 | 3 targets, 3.41 km, 3.7 h, 0.072 mSv, MARGINAL | 3 targets, 3.44 km, 3.7 h, 0.072 mSv, MARGINAL | 4 targets, 3.49 km, 4.4 h, 0.086 mSv, **FAIL** |
+| `jezero_delta`, 1130 | 4 targets, 2.98 km, 3.7 h, MARGINAL | 4 targets, 2.98 km, 3.8 h, **FAIL** | 5 targets, 3.34 km, 4.3 h, MARGINAL |
+| `nili_planum`, 1130 | 4 targets, 2.25 km, 3.7 h, MARGINAL | same route | same route |
 
-Tested against `Alg` as of commit `272afd3`, without changing its code:
+What to know when reading them:
 
-- **Router** (`mars_map/astronaut_router.py`): works. It planned a 3.39 km, 3.9 h walk to both
-  priority-1 Curiosity stops and flagged it NO-GO on battery (13 % left).
-- **Environment maps** (`scripts/make_env_maps.py`): **crash** with
-  `KeyError: 'dust_opacity_tau'`. Real data has no dust opacity (see the contract). `Alg`
-  needs a default there, for example `site.series.get("dust_opacity_tau")` with a fallback.
+- **FAIL comes from the physiology simulator**, not from the limits: on one step the slope
+  and the ground need more power than the crew member can sustain (Gale science: 13° needs
+  408 W against 402 W). The planner itself calls all nine plans feasible.
+- **Every plan is MARGINAL at best because of radio.** 0.9–1.7 km of every route has no line
+  of sight to the base mast, over an hour at a stretch against a 15 min limit. The planner
+  proposes relay drop points.
+- **Jezero and Nili Planum have no measured radiation.** Perseverance has no detector, so the
+  planner uses a typical Gale dose (0.67 mSv per sol). Their dose numbers are a placeholder;
+  the map says so in the plan box.
+- **Nili Planum's three plans are identical**: at 20 m elevation the terrain is too smooth
+  for the strategies to differ.
+- The report is printed in Russian (the JSON and the map are in English).
+- The `mars_eva_sim` tests need `pytest`, which is not in `requirements.txt`; they were not
+  run here.
+
+Fixed while connecting the planner to real terrain: the emergency-shelter search could pick
+a spot the full-resolution search cannot reach and crash the whole run before the plans
+were written (it did on `gale_boxwork`). It now tries the next best spot.
+`scripts\make_env_maps.py --site data/<site> --sol <sol>` also crashed on every real site (it
+required the dust-opacity and radiation series); it now uses the model's defaults for a series
+the site does not have.
+
+## Giving a real site to someone else
+
+A site is two files, `layers.npz` and `site.json` (68 MB together for Gale). `data/` is not
+in git: either build it with the quick-start commands, or zip the two files and unzip them
+into `data/<site>/`. `Site.load("data/gale_boxwork")` then works exactly like the stub.
 
 ## The real site: `gale_boxwork`
 

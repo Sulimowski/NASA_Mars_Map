@@ -1224,20 +1224,33 @@ class EvaRouter:
         with np.errstate(invalid="ignore"):                       # inf * 0 in cells masked below
             total = (here * walk_s + self._c_rate_min * wait_s) / 3600.0
         total[(walk_s > max_walk_min * 60.0) | ~self._c_valid] = INF
-        if np.isfinite(total).any():
-            best = np.unravel_index(int(np.argmin(total)), total.shape)
-        else:                                          # nowhere to go: stay where you are
-            best = divmod(node, self.Cc)
+        # Candidates, best first. The coarse graph can call a cell reachable that the
+        # full-resolution search then cannot enter (a thin cliff on steep real terrain),
+        # so a candidate whose leg is not found is skipped instead of failing the call.
+        order = np.argsort(total, axis=None)
+        candidates = [np.unravel_index(int(i), total.shape) for i in order[:40]
+                      if np.isfinite(total.flat[int(i)])]
+        candidates.append(divmod(node, self.Cc))       # last resort: stay where you are
 
-        # The best fine cell inside that coarse cell.
         f = self.f
-        r0, c0 = int(best[0]) * f, int(best[1]) * f
-        block_rate = np.where(self.fine.imp[r0:r0 + f, c0:c0 + f], np.inf,
-                              self.fine.rate[r0:r0 + f, c0:c0 + f])
-        br, bc = np.unravel_index(int(np.argmin(block_rate)), block_rate.shape)
-        spot = (r0 + int(br), c0 + int(bc))
-        spot_m = self.site.to_metres(*spot)
-        seg = self.leg(tuple(current_pos_m), spot_m, _FASTEST, "Current position", "Shelter")
+        seg = None
+        for best in candidates:
+            # The best fine cell inside that coarse cell.
+            r0, c0 = int(best[0]) * f, int(best[1]) * f
+            block_rate = np.where(self.fine.imp[r0:r0 + f, c0:c0 + f], np.inf,
+                                  self.fine.rate[r0:r0 + f, c0:c0 + f])
+            if not np.isfinite(block_rate).any():
+                continue
+            br, bc = np.unravel_index(int(np.argmin(block_rate)), block_rate.shape)
+            spot = (r0 + int(br), c0 + int(bc))
+            spot_m = self.site.to_metres(*spot)
+            try:
+                seg = self.leg(tuple(current_pos_m), spot_m, _FASTEST, "Current position", "Shelter")
+                break
+            except RuntimeError:
+                continue
+        if seg is None:
+            raise RuntimeError(f"No shelter can be reached from {current_pos_m}.")
         there = float(self.fine.rate[spot])
         reduction = 100.0 * (1.0 - there / here) if here > 0 else 0.0
         walk_h = seg.duration_min / 60.0

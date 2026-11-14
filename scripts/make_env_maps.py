@@ -35,10 +35,15 @@ def _panel(fig, ax, site, data, title, cmap, **kw):
 
 
 def render(site: Site, env: Environment, sol: int, out: Path) -> Path:
-    doses = site.series["radiation_msv_per_sol"]
-    sols = site.series.get("sol") or list(range(len(doses)))
-    quiet_sol = sols[int(np.argsort(doses)[len(doses) // 2])]
-    event_sol = sols[int(np.argmax(doses))]
+    doses = site.series.get("radiation_msv_per_sol")
+    if doses:
+        sols = site.series.get("sol") or list(range(len(doses)))
+        quiet_sol = sols[int(np.argsort(doses)[len(doses) // 2])]
+        event_sol = sols[int(np.argmax(doses))]
+    else:
+        # No radiation series (a site far from Curiosity): the model then uses its typical
+        # dose for every sol, so both panels show the chosen sol.
+        quiet_sol = event_sol = sol
 
     fig, axes = plt.subplots(2, 4, figsize=(21, 10.5))
     top, bottom = axes
@@ -55,7 +60,7 @@ def render(site: Site, env: Environment, sol: int, out: Path) -> Path:
                f"Ground temperature, °C — sol {sol}, {t:04.1f} h", "coolwarm")
 
     fig.suptitle(f"{site.name} — {site.source}  |  radiation and temperature model  |  "
-                 f"season Ls {env.ls(sol):.0f}°, dust tau {env.series_value('dust_opacity_tau', sol)}"
+                 f"season Ls {env.ls(sol):.0f}°, dust tau {env.dust_tau(sol)}"
                  f"  |  hours are local true solar time", fontsize=12)
     fig.tight_layout()
     fig.savefig(out, dpi=90)

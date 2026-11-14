@@ -379,6 +379,11 @@ def print_report(result: EvaPlanSet) -> None:
 
 
 def main() -> None:
+    # The report is printed in Russian; a Windows console in a legacy code page turns
+    # it into question marks unless the stream is told to write UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Plan the EVA of a site: three alternative routes.")
     ap.add_argument("--site", default=None, help="site folder (default: the stub site)")
     ap.add_argument("--sol", type=int, default=None)
@@ -405,9 +410,13 @@ def main() -> None:
     far = max(site.targets, key=lambda t: np.hypot(t.x_m - site.start[0], t.y_m - site.start[1]),
               default=None)
     probe = (far.x_m, far.y_m) if far else tuple(site.start)
-    esc = result.shelter(probe)
-    print(f"\nукрытие из точки {probe}: {esc.segment.distance_m:.0f} м, {esc.eta_min:.1f} мин, "
-          f"мощность дозы -{esc.reduction_pct:.0f}% ({esc.compute_s:.2f} с)")
+    try:
+        esc = result.shelter(probe)
+        print(f"\nукрытие из точки {probe}: {esc.segment.distance_m:.0f} м, {esc.eta_min:.1f} мин, "
+              f"мощность дозы -{esc.reduction_pct:.0f}% ({esc.compute_s:.2f} с)")
+    except RuntimeError as e:                 # the demo probe must not cost us the plans
+        print(f"\nукрытие из точки {probe}: {e}")
+        probe = None
 
     print(f"json    {result.to_json(out / 'eva_plans.json')}")
     print(f"preview {render(result, out / 'eva_plans.png', shelter_from=probe)}")
