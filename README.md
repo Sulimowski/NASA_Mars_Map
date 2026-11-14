@@ -53,6 +53,45 @@ site.start, site.targets          # base and science stops, in site metres
 
 No internet? `scripts\make_stub_site.py` makes the synthetic site `data/gale_stub/` in 3 seconds.
 
+## Plan a walk for your own points
+
+```bash
+.venv\Scripts\python scripts\serve.py
+```
+
+Open the address it prints (http://127.0.0.1:8770/gui/, or a map directly, for example
+http://127.0.0.1:8770/data/gale_boxwork/view3d.html). In the map, the box
+**Plan your own walk** on the right:
+
+1. **Set base**, then click the map where the base should be.
+2. **Add points** stays on: every click on the map adds a point to visit. A point can be
+   removed with the ✕ next to it in the list of stops.
+   To rename a point, click the ✎ next to it (or double-click its name), type the name and
+   press Enter; Esc cancels. The name shows on the map, in the plan and goes to the planner.
+   The base keeps its name.
+3. **Plan routes** sends the base and the points to the planner. In 5–20 seconds the three
+   routes (shielded, eco, science) come back; the route on the map, the walker and the
+   numbers are for your points.
+4. **Reset to site** brings back the site's own base, targets and plans.
+
+What to know:
+
+- It needs `scripts\serve.py`. A page opened from a file or from `python -m http.server`
+  still shows the plans it was built with, and the box says live planning is off.
+- A point placed on blocked ground is moved to the nearest open ground within 60 m, and the
+  page says so. Further than that, the request is refused with the reason.
+- Own points have priority 1 and 20 minutes of work each. The planner may still leave a
+  point out if the walk does not fit the limits; the plan lists it under "Left out".
+- The first request for a site takes a few seconds longer: the site and its radiation and
+  temperature model are loaded once and kept in memory.
+- At most 12 points. One plan is computed at a time.
+- The server answers only on this computer unless started with `--bind 0.0.0.0`.
+
+The API, for the GUI or anything else: `POST /api/plan` with
+`{"site": "gale_boxwork", "start": [x_m, y_m], "targets": [{"name": "...", "x": x_m, "y": y_m}]}`,
+`GET /api/health` lists the built sites. Details in the header of
+[`scripts/serve.py`](scripts/serve.py).
+
 ## 3D view
 
 ```bash

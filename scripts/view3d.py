@@ -232,46 +232,19 @@ def rover_track(site: Site) -> list[list[float]]:
         return []
 
 
-def _thin(points: list, limit: int = 600) -> list:
-    keep = max(1, len(points) // limit)
-    return points[::keep] + ([points[-1]] if points and (len(points) - 1) % keep else [])
-
-
-def eva_plans(folder: Path) -> dict | None:
+def eva_plans(folder: Path, site: Site) -> dict | None:
     """The three EVA plans of the planner (`python -m mars_map.pipeline --site <folder>`),
     reduced to what the page draws. None when `<folder>/eva_plans.json` is not there."""
+    from mars_map.viewer.plans import plans_view
+
     path = folder / "eva_plans.json"
     if not path.exists():
         return None
     doc = json.loads(path.read_text(encoding="utf-8"))
-    cond = doc.get("conditions", {})
-    items = []
-    for key, p in doc.get("strategies", {}).items():
-        phys, radio = p.get("physiology") or {}, p.get("radio") or {}
-        notes = []                       # composed here in English from the structured fields
-        if p.get("skipped_targets"):
-            notes.append("Left out: " + ", ".join(t["name"] for t in p["skipped_targets"]) + ".")
-        if radio.get("shadow_m"):
-            notes.append(f"No radio contact with the base on {radio['shadow_m']:.0f} m of the route; "
-                         f"{len(radio.get('relay_points', []))} relay drop points proposed.")
-        if phys.get("status") and phys["status"] != "OK":
-            notes.append(f"Physiology check {phys['status']}: {phys.get('message', '')}".strip())
-        notes += [str(w) for w in phys.get("warnings", []) if w]
-        items.append({
-            "id": key, "title": p.get("title", key), "feasible": bool(p.get("feasible")),
-            "physiology": phys.get("status"),
-            "points": _thin([[w["x_m"], w["y_m"]] for w in p.get("waypoints", [])]),
-            "summary": p.get("summary", {}), "usage": p.get("usage_pct", {}),
-            "targets": p.get("visited_targets", []), "warnings": notes,
-        })
-    if not items:
-        return None
-    rate, temp = cond.get("dose_rate_usv_h") or {}, cond.get("ground_temp_c") or {}
-    print(f"  plans: {', '.join(i['id'] for i in items)} from {path.name} (sol {cond.get('sol')})")
-    return {"sol": cond.get("sol"), "ltst": cond.get("ltst_h"),
-            "particleEvent": bool(cond.get("particle_event")),
-            "doseRate": rate.get("median"), "groundTemp": temp.get("median"),
-            "items": items}
+    plans = plans_view(doc, radiation_measured=bool(site.series.get("radiation_msv_per_sol")))
+    if plans:
+        print(f"  plans: {', '.join(i['id'] for i in plans['items'])} from {path.name} (sol {plans['sol']})")
+    return plans
 
 
 def three_source() -> str | None:
@@ -326,10 +299,7 @@ def build(folder: Path) -> Path:
                         "kind": kind, "photo": url.group(0).rstrip(".") if url else None,
                         "note": re.sub(r"\s*Photo from the spot:\s*https?://\S+", "", t.note or "").strip()})
 
-    plans = eva_plans(folder)
-    if plans is not None:
-        # Without a radiation series the planner falls back to a typical Gale dose.
-        plans["radiationMeasured"] = bool(site.series.get("radiation_msv_per_sol"))
+    plans = eva_plans(folder, site)
     route = None
     plan_path = folder / "astronaut_plan.json"
     if plans is None and plan_path.exists():

@@ -9,8 +9,8 @@
     },
     {
       "name": "gui",
-      "runtimeExecutable": "py",
-      "runtimeArgs": ["-3.14", "-m", "http.server", "8770", "--bind", "127.0.0.1"],
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["scripts/serve.py", "--port", "8770"],
       "port": 8770
     }
   ]

@@ -1,0 +1,227 @@
+"""The app server: the pages, plus live EVA planning for points chosen on the map.
+
+    .venv\\Scripts\\python scripts\\serve.py              # http://127.0.0.1:8770/gui/
+    .venv\\Scripts\\python scripts\\serve.py --port 8771
+
+It serves the project folder like `python -m http.server` (so `gui/` and
+`data/<site>/view3d.html` open as before) and adds two addresses:
+
+    GET  /api/health                  {"ok": true, "sites": [...]}
+    POST /api/plan                    plan a walk for a base and points chosen by the user
+
+`/api/plan` takes JSON:
+
+    {"site": "gale_boxwork",
+     "start": [x_m, y_m],
+     "targets": [{"name": "Point 1", "x": x_m, "y": y_m, "priority": 1, "dwell": 20}, ...],
+     "sol": 4650}                      # optional, default: the first sol the site has
+
+and answers with the three plans in the shape the page draws (`mars_map/viewer/plans.py`),
+the points as the planner used them (moved to walkable ground if they were on blocked
+cells) and notes about what was moved. Planning takes 5-20 s; the first request for a
+site is slower because the site and its radiation / temperature model are loaded once
+and kept in memory.
+
+Only binds to this computer unless `--bind 0.0.0.0` is given.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import re
+import sys
+import threading
+import time
+import traceback
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from mars_map import DATA_DIR, Site, Target  # noqa: E402
+from mars_map.environment import Environment  # noqa: E402
+from mars_map.pipeline import plan_site  # noqa: E402
+from mars_map.viewer.plans import plans_view  # noqa: E402
+
+SITE_NAME = re.compile(r"^[a-z0-9_]{1,64}$")
+MAX_TARGETS = 12
+MAX_BODY = 64_000
+SNAP_RADIUS_M = 60.0
+
+
+class PlanError(ValueError):
+    """A request the planner cannot serve; the message is shown to the user."""
+
+
+class Planner:
+    """Sites and their environment models, loaded once. One plan at a time."""
+
+    def __init__(self):
+        self._sites: dict[str, tuple[Site, Environment]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def available() -> list[str]:
+        return sorted(p.parent.name for p in DATA_DIR.glob("*/site.json")
+                      if (p.parent / "layers.npz").exists())
+
+    def _load(self, name: str) -> tuple[Site, Environment]:
+        if name not in self._sites:
+            if not SITE_NAME.match(name) or name not in self.available():
+                raise PlanError(f"unknown site {name!r}; built sites: {', '.join(self.available())}")
+            site = Site.load(DATA_DIR / name)
+            self._sites[name] = (site, Environment(site))
+        return self._sites[name]
+
+    @staticmethod
+    def _snap(site: Site, x: float, y: float, what: str, notes: list[str]) -> tuple[float, float]:
+        """A point on blocked ground moves to the nearest open cell within SNAP_RADIUS_M."""
+        w, h = site.extent_m
+        if not (0 <= x < w and 0 <= y < h):
+            raise PlanError(f"{what} is outside the map")
+        blocked = site.layers["blocked"] if "blocked" in site.layers else site.layers["terrain_class"] == 3
+        r, c = site.to_pixel(x, y)
+        if not blocked[r, c]:
+            return x, y
+        k = int(SNAP_RADIUS_M / site.resolution_m)
+        r0, r1, c0, c1 = max(0, r - k), min(blocked.shape[0], r + k + 1), max(0, c - k), min(blocked.shape[1], c + k + 1)
+        free = np.argwhere(~blocked[r0:r1, c0:c1])
+        if free.size == 0:
+            raise PlanError(f"{what} is on blocked ground and there is no open ground within "
+                            f"{SNAP_RADIUS_M:.0f} m of it")
+        d = np.hypot(free[:, 0] + r0 - r, free[:, 1] + c0 - c)
+        rr, cc = free[int(np.argmin(d))] + (r0, c0)
+        nx, ny = site.to_metres(int(rr), int(cc))
+        notes.append(f"{what} was on blocked ground and was moved {float(d.min()) * site.resolution_m:.0f} m "
+                     f"to the nearest open ground.")
+        return float(nx), float(ny)
+
+    def plan(self, req: dict) -> dict:
+        name = str(req.get("site", ""))
+        start, targets = req.get("start"), req.get("targets")
+        if not (isinstance(start, list) and len(start) == 2):
+            raise PlanError("the base is not set")
+        if not isinstance(targets, list) or not targets:
+            raise PlanError("add at least one point to visit")
+        if len(targets) > MAX_TARGETS:
+            raise PlanError(f"at most {MAX_TARGETS} points")
+
+        with self._lock:                                   # the planner is heavy: one at a time
+            t0 = time.perf_counter()
+            base, env = self._load(name)
+            notes: list[str] = []
+            try:
+                sx, sy = self._snap(base, float(start[0]), float(start[1]), "The base", notes)
+                chosen = []
+                for i, t in enumerate(targets):
+                    label = str(t.get("name") or f"Point {i + 1}")[:60]
+                    x, y = self._snap(base, float(t["x"]), float(t["y"]), label, notes)
+                    chosen.append(Target(label, round(x, 1), round(y, 1),
+                                         priority=min(3, max(1, int(t.get("priority", 1)))),
+                                         dwell_min=min(240.0, max(0.0, float(t.get("dwell", 20)))),
+                                         note=str(t.get("note", ""))[:300]))
+            except (KeyError, TypeError, ValueError) as e:
+                if isinstance(e, PlanError):
+                    raise
+                raise PlanError(f"bad point in the request: {e}") from e
+
+            site = copy.copy(base)                         # layers and series are shared, not copied
+            site.start = (round(sx, 1), round(sy, 1))
+            site.targets = chosen
+            sol = req.get("sol")
+            try:
+                result = plan_site(site, sol=int(sol) if sol is not None else None, env=env)
+            except (RuntimeError, ValueError, KeyError) as e:
+                raise PlanError(f"the planner could not plan this walk: {e}") from e
+
+            plans = plans_view(result.to_dict(),
+                               radiation_measured=bool(site.series.get("radiation_msv_per_sol")))
+            if plans is None:
+                raise PlanError("the planner returned no plan")
+            return {
+                "plans": plans, "notes": notes,
+                "start": list(site.start),
+                "targets": [{"name": t.name, "x": t.x_m, "y": t.y_m, "priority": t.priority,
+                             "dwell": t.dwell_min, "note": t.note} for t in chosen],
+                "seconds": round(time.perf_counter() - t0, 1),
+            }
+
+
+class Handler(SimpleHTTPRequestHandler):
+    planner: Planner
+
+    def _json(self, code: int, body: dict) -> None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/api/health":
+            return self._json(200, {"ok": True, "sites": self.planner.available()})
+        return super().do_GET()
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/api/plan":
+            return self._json(404, {"error": "unknown address"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= MAX_BODY:
+                raise PlanError("empty or oversized request")
+            req = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(req, dict):
+                raise PlanError("the request must be a JSON object")
+            return self._json(200, self.planner.plan(req))
+        except PlanError as e:
+            return self._json(400, {"error": str(e)})
+        except json.JSONDecodeError:
+            return self._json(400, {"error": "the request is not valid JSON"})
+        except Exception as e:                              # a bug: say so, keep serving
+            traceback.print_exc()
+            return self._json(500, {"error": f"planner error: {type(e).__name__}: {e}"})
+
+    def end_headers(self):
+        # Pages are rebuilt by scripts; never let the browser show a stale one.
+        if not self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def log_message(self, fmt, *args):
+        if "/api/" in (args[0] if args else ""):
+            super().log_message(fmt, *args)
+
+
+def main() -> None:
+    for stream in (sys.stdout, sys.stderr):                # the planner prints Russian text
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--bind", default="127.0.0.1", help="0.0.0.0 to reach it from other devices")
+    args = ap.parse_args()
+
+    Handler.planner = Planner()
+    server = ThreadingHTTPServer((args.bind, args.port), partial(Handler, directory=str(ROOT)))
+    host = "127.0.0.1" if args.bind in ("0.0.0.0", "") else args.bind
+    print(f"Serving on http://{host}:{args.port}/gui/")
+    for name in Handler.planner.available():
+        if (DATA_DIR / name / "view3d.html").exists():
+            print(f"  map: http://{host}:{args.port}/data/{name}/view3d.html")
+    print("Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+
+
+if __name__ == "__main__":
+    main()

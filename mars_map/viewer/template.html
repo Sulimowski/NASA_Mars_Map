@@ -108,6 +108,17 @@ input[type=range]{width:100%;margin:0;accent-color:var(--link)}
 .status{display:flex;align-items:center;gap:7px;margin-top:0;margin-bottom:6px;font-weight:600}
 .status i{width:9px;height:9px;background:var(--ok)} .status.bad i{background:var(--bad)}
 .warn{margin:6px 0 0;color:var(--warn)}
+#edit{padding:0 12px}
+#edit .row{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+#edit button{font:inherit;color:var(--text);background:#30353c;border:1px solid #4a5058;padding:4px 9px;cursor:pointer}
+#edit button:hover{background:var(--hover)}
+#edit button.on{background:var(--sel);border-color:var(--sel);color:#fff}
+#edit button.go{background:var(--ok);border-color:var(--ok);color:#10140f;font-weight:600}
+#edit button:disabled{opacity:.45;cursor:default}
+#edit .note{margin:0 0 6px}
+.stop .x,.stop .e{cursor:pointer;color:var(--dim);padding:0 3px} .stop .x:hover{color:var(--bad)} .stop .e:hover{color:var(--link)}
+.stop input{font:inherit;color:var(--text);background:#1c1f23;border:1px solid var(--sel);padding:0 4px;width:100%;min-width:0;box-sizing:border-box}
+canvas.placing{cursor:crosshair}
 svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
 .spark text{font:11px var(--ui);fill:var(--dim)}
 .series{margin:8px 0 0}
@@ -147,6 +158,7 @@ svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
 <aside class="panel right">
   <section><h2>Under cursor</h2><table id="probe"><tr><td>Move over the terrain</td><td></td></tr></table></section>
   <section><h2>Stops</h2><div id="stops"></div><div id="detail"></div></section>
+  <section><h2>Plan your own walk</h2><div id="edit"></div></section>
   <section id="planBox" style="display:none"><h2>EVA plan</h2><div id="plan"></div></section>
   <section id="condBox" style="display:none"><h2>Conditions by sol</h2><div id="cond"></div></section>
 </aside>
@@ -288,13 +300,15 @@ const terrainMat = new THREE.ShaderMaterial({
 
 // ---------- things on the map ----------
 const overlay = new THREE.Group(); scene.add(overlay);
-const stops = [{name: 'Base', x: D.start[0], y: D.start[1], kind: 'base', priority: 0, note: 'Start and finish of every walk.', photo: null},
-               ...D.targets];
+const baseStop = (x, y) => ({name: 'Base', x, y, kind: 'base', priority: 0, note: 'Start and finish of every walk.', photo: null});
+let stops = [baseStop(D.start[0], D.start[1]), ...D.targets];
+const SITE_STOPS = stops.slice(), SITE_PLANS = D.plans;       // what the page was built with
 const INK = 0x1f1813, PAPER = 0xefe5cf, RUST = 0xb3461f, GOLD = 0xf2c230, GREEN = 0x3f9a63, ROUTE = 0x12d6c6;
 const headOf = k => k === 'base' ? [new THREE.ConeGeometry(15, 26, 4), GREEN]
   : k === 'rover' ? [new THREE.SphereGeometry(11, 20, 14), RUST]
   : k === 'mineral' ? [new THREE.OctahedronGeometry(12), GOLD] : [new THREE.BoxGeometry(17, 17, 17), PAPER];
-const pins = stops.map((s, i) => {
+let pins = [];
+const makePin = (s, i) => {
   const g = new THREE.Group(), [geo, col] = headOf(s.kind);
   const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 58, 6), new THREE.MeshBasicMaterial({color: PAPER}));
   stem.position.y = 29;
@@ -305,13 +319,18 @@ const pins = stops.map((s, i) => {
   tag.className = 'tag ' + s.kind; tag.innerHTML = `<b>${i === 0 ? 'B' : i}</b>${s.name.replace(/ exposure \d+$/, '').replace(/\s*\(.*?\)/, '')}`;
   tag.onclick = () => select(i, true); $('labels').appendChild(tag);
   return {g, head, tag, s};
-});
+};
+function buildPins() {                             // called again whenever the stops change
+  pins.forEach(p => { overlay.remove(p.g); p.tag.remove(); });
+  pins = stops.map(makePin);
+}
+buildPins();
 const ring = new THREE.Mesh(new THREE.RingGeometry(13, 16.5, 40), new THREE.MeshBasicMaterial({color: PAPER, side: THREE.DoubleSide, transparent: true, opacity: .9, depthTest: false}));
 ring.rotation.x = -Math.PI / 2; ring.visible = false; ring.renderOrder = 5; scene.add(ring);
 
 let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0;
 // EVA plans: the planner's three strategies, or the single route of the older format.
-const PLANS = D.plans ? D.plans.items : (D.route ? [Object.assign({id: 'route', title: 'EVA route'}, D.route)] : []);
+let PLANS = D.plans ? D.plans.items : (D.route ? [Object.assign({id: 'route', title: 'EVA route'}, D.route)] : []);
 let PLAN = PLANS.find(p => p.id === 'science') || PLANS[0] || null;
 const walker = new THREE.Mesh(new THREE.SphereGeometry(9, 16, 12), new THREE.MeshBasicMaterial({color: 0xffffff}));
 const halo = new THREE.Mesh(new THREE.SphereGeometry(17, 16, 12), new THREE.MeshBasicMaterial({color: ROUTE, transparent: true, opacity: .35}));
@@ -402,6 +421,7 @@ function readout() {
 }
 function clickAt() {
   if (!hit) return;
+  if (placing) return placeAt(hit.x + W / 2, hit.z + H / 2);
   const xm = hit.x + W / 2, ym = hit.z + H / 2; let best = -1, bd = 70;
   stops.forEach((s, i) => { const d = Math.hypot(s.x - xm, s.y - ym); if (d < bd) { bd = d; best = i; } });
   if (best >= 0) select(best, false);
@@ -466,14 +486,19 @@ $('op').oninput = () => { uniforms.uOpacity.value = +$('op').value; $('opv').tex
 $('ex').oninput = () => { exag = +$('ex').value; uniforms.uExag.value = exag; $('exv').textContent = exag.toFixed(2); ring.visible = false; layout(); };
 
 let selected = -1;
-$('stops').innerHTML = stops.map((s, i) => `<div class="stop ${s.kind}" data-i="${i}"><b>${i === 0 ? 'B' : i}</b><span>${s.name.replace(/\s*\(.*?\)/, '')}</span><small>${i === 0 ? '' : 'P' + s.priority}</small></div>`).join('');
-document.querySelectorAll('.stop').forEach(e => e.onclick = () => select(+e.dataset.i, true));
+function listStops() {
+  $('stops').innerHTML = stops.map((s, i) => `<div class="stop ${s.kind}${i === selected ? ' on' : ''}" data-i="${i}"><b>${i === 0 ? 'B' : i}</b><span>${s.name.replace(/\s*\(.*?\)/, '')}</span><small>${i === 0 ? '' : 'P' + s.priority}${i ? ` <a class="e" data-e="${i}" title="Rename this point">&#9998;</a>` : ''}${custom && i ? ` <a class="x" data-x="${i}" title="Remove this point">&#10005;</a>` : ''}</small></div>`).join('');
+  document.querySelectorAll('.stop .e').forEach(e => e.onclick = ev => { ev.stopPropagation(); renameStop(+e.dataset.e); });
+  document.querySelectorAll('.stop span').forEach(e => e.ondblclick = ev => { const i = +e.parentNode.dataset.i; if (i) { ev.stopPropagation(); renameStop(i); } });
+  document.querySelectorAll('.stop').forEach(e => e.onclick = () => select(+e.dataset.i, true));
+  document.querySelectorAll('.stop .x').forEach(e => e.onclick = ev => { ev.stopPropagation(); stops.splice(+e.dataset.x, 1); renumber(); stopsChanged(); });
+}
 function select(i, fly) {
   selected = i; const s = stops[i];
   document.querySelectorAll('.stop').forEach(e => e.classList.toggle('on', +e.dataset.i === i));
   pins.forEach((p, n) => p.tag.classList.toggle('on', n === i));
   const d = $('detail'); d.style.display = 'block';
-  const dist = Math.hypot(s.x - D.start[0], s.y - D.start[1]);
+  const dist = Math.hypot(s.x - stops[0].x, s.y - stops[0].y);
   d.innerHTML = `<h3>${s.name}</h3>${s.note || ''}<table style="margin-top:6px">
     <tr><td>Position</td><td>${fmt(s.x, 0)} E &middot; ${fmt(s.y, 0)} S m</td></tr>
     <tr><td>Elevation</td><td>${fmt(emin + hAt(s.x - W / 2, s.y - H / 2), 0)} m</td></tr>
@@ -485,7 +510,7 @@ function select(i, fly) {
 const PLAN_NAMES = {shielded: 'Radiation shelter', eco: 'Least oxygen', science: 'Most science', route: 'EVA route'};
 const planOk = p => p.feasible && p.physiology !== 'FAIL';
 function showPlan() {
-  if (!PLAN) return;
+  if (!PLAN) { $('planBox').style.display = 'none'; return; }
   const s = PLAN.summary, m = D.mission, P = D.plans; $('planBox').style.display = '';
   const cell = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`;
   // With several plans: one row each to compare and pick, like the list of stops.
@@ -501,6 +526,97 @@ function showPlan() {
   document.querySelectorAll('#plan tr.row').forEach(r => r.onclick = () => {
     PLAN = PLANS.find(p => p.id === r.dataset.p); layout(); showPlan(); t0 = performance.now(); });
 }
+// ---------- plan your own walk: place a base and points, ask the planner for the routes ----------
+// Needs the app server (scripts/serve.py): it runs the Python planner. Opened any other way
+// the page still shows the plans it was built with, and says how to get live planning.
+let custom = false, placing = null, busy = false, live = null, editMsg = '', editBad = false;
+const nameTaken = (n, skip) => n === 'Base' || stops.some((s, k) => k !== skip && s.name === n);
+const freeName = (want, skip) => { let n = want, k = 2; while (nameTaken(n, skip)) n = `${want} ${k++}`; return n; };
+// Points the user has not named are numbered by their place in the list; a given name stays.
+const renumber = () => stops.forEach((s, i) => { if (i && s.custom && !s.renamed) s.name = freeName('Point ' + i, i); });
+function renameStop(i) {                           // the name in the list turns into a text field
+  const span = document.querySelector(`.stop[data-i="${i}"] span`); if (!span) return;
+  const inp = document.createElement('input'); inp.value = stops[i].name; inp.maxLength = 40;
+  let closed = false;
+  const close = keep => { if (closed) return; closed = true; if (keep) applyName(i, inp.value); listStops(); };
+  inp.onclick = e => e.stopPropagation();
+  inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') close(true); else if (e.key === 'Escape') close(false); };
+  inp.onblur = () => close(true);
+  span.replaceWith(inp); inp.focus(); inp.select();
+}
+function applyName(i, raw) {
+  // the name goes into the page as markup and to the planner as text: keep it plain
+  const want = raw.replace(/[<>&"'`\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  const old = stops[i].name;
+  if (!want || want === old) return;
+  const name = freeName(want, i);
+  stops[i].name = name; stops[i].renamed = true;
+  // plans already on screen talk about the point by its old name
+  PLANS.forEach(p => { p.targets = p.targets.map(t => t === old ? name : t); p.warnings = p.warnings.map(w => w.split(old).join(name)); });
+  buildPins(); layout(); showPlan();
+  if (selected === i) select(i, false);
+}
+function stopsChanged() {                          // the routes on screen no longer match the points
+  selected = -1; $('detail').style.display = 'none';
+  PLANS = []; PLAN = null; D.plans = null;
+  buildPins(); listStops(); layout(); showPlan(); drawEdit();
+}
+function placeAt(x, y) {
+  x = Math.round(x); y = Math.round(y);
+  if (!custom) { custom = true; stops = [stops[0]]; }            // first own point: drop the site's targets
+  if (placing === 'base') { stops[0] = baseStop(x, y); placing = 'point'; }
+  else stops.push({name: freeName('Point ' + stops.length), x, y, kind: 'site', priority: 1, dwell: 20, note: 'Chosen on the map.', photo: null, custom: true});
+  editMsg = ''; stopsChanged();
+}
+function resetWalk() {
+  custom = false; placing = null; editMsg = ''; stops = SITE_STOPS.slice();
+  D.plans = SITE_PLANS; PLANS = SITE_PLANS ? SITE_PLANS.items : []; PLAN = PLANS.find(p => p.id === 'science') || PLANS[0] || null;
+  selected = -1; $('detail').style.display = 'none';
+  buildPins(); listStops(); layout(); showPlan(); drawEdit();
+}
+async function planWalk() {
+  if (busy || stops.length < 2) return;
+  busy = true; editBad = false; editMsg = 'Planning the routes. This takes 5–20 seconds…'; drawEdit();
+  try {
+    const r = await fetch('/api/plan', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({site: D.name, sol: SITE_PLANS ? SITE_PLANS.sol : null, start: [stops[0].x, stops[0].y],
+        targets: stops.slice(1).map(s => ({name: s.name, x: s.x, y: s.y, priority: s.priority, dwell: s.dwell, note: s.custom ? '' : (s.note || '')}))})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('server answered ' + r.status));
+    // the planner may have moved a point off blocked ground: show the points it used
+    stops[0].x = j.start[0]; stops[0].y = j.start[1];
+    j.targets.forEach((t, i) => { stops[i + 1].x = t.x; stops[i + 1].y = t.y; });
+    D.plans = j.plans; PLANS = j.plans.items; PLAN = PLANS.find(p => p.id === 'science') || PLANS[0];
+    editMsg = `Planned in ${j.seconds} s.` + (j.notes.length ? ' ' + j.notes.join(' ') : '');
+    buildPins(); listStops(); layout(); showPlan(); t0 = performance.now();
+  } catch (e) { editBad = true; editMsg = 'Could not plan: ' + e.message; }
+  busy = false; drawEdit();
+}
+function drawEdit() {
+  canvas.classList.toggle('placing', !!placing);
+  const n = stops.length - 1, ready = live && n > 0 && !busy;
+  const hint = placing === 'base' ? 'Click the map where the base should be.'
+    : placing === 'point' ? 'Click the map to add points to visit. Click “Add points” again when done.'
+    : custom ? `${n} point${n === 1 ? '' : 's'} chosen.` : 'Choose your own base and points; the routes are planned for them.';
+  $('edit').innerHTML = `<p class="note">${hint}</p>
+    <div class="row"><button data-a="base" class="${placing === 'base' ? 'on' : ''}">Set base</button>
+      <button data-a="point" class="${placing === 'point' ? 'on' : ''}">Add points</button>
+      ${custom ? '<button data-a="reset">Reset to site</button>' : ''}</div>
+    <div class="row"><button data-a="plan" class="go"${ready ? '' : ' disabled'}>${busy ? 'Planning…' : 'Plan routes'}</button></div>
+    ${editMsg ? `<p class="${editBad ? 'warn' : 'note'}">${editMsg}</p>` : ''}
+    ${live === false ? '<p class="warn">Live planning is off: this page was not opened from the app server. Run <b>scripts\\serve.py</b> and open the address it prints.</p>' : ''}`;
+  document.querySelectorAll('#edit button').forEach(b => b.onclick = () => {
+    const a = b.dataset.a;
+    if (a === 'plan') return planWalk();
+    if (a === 'reset') return resetWalk();
+    placing = placing === a ? null : a; drawEdit();
+  });
+}
+addEventListener('keydown', e => { if (e.key === 'Escape' && placing) { placing = null; drawEdit(); } });
+listStops(); drawEdit();
+fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject()).then(j => { live = !!j.ok && j.sites.includes(D.name); })
+  .catch(() => { live = false; }).finally(drawEdit);
+
 showPlan();
 { const S = D.series, sol = S.sol || [];
   const spark = (title, lines, unit) => {

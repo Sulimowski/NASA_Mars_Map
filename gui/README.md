@@ -12,10 +12,15 @@ Helmet mode: not started.
 Serve the project root (the GUI reads `gui/` and `data/`), then open http://localhost:8770/gui/
 
 ```bash
-.venv\Scripts\python -m http.server 8770
+.venv\Scripts\python scripts\serve.py
 ```
 
-On an iPad in the same Wi-Fi: add `--bind 0.0.0.0` and open `http://<computer IP>:8770/gui/`.
+`scripts/serve.py` serves the same files as `python -m http.server 8770` and adds live
+planning: in a site's 3D map the user can set a base and points and get routes for them
+(`POST /api/plan`, see the main [README](../README.md)). A plain `http.server` still works
+for looking at the globe and the precomputed plans.
+
+On an iPad in the same Wi-Fi: start it with `--bind 0.0.0.0` and open `http://<computer IP>:8770/gui/`.
 
 Stack: plain HTML + ES modules + three.js 0.160 (in `vendor/`), no build step.
 
