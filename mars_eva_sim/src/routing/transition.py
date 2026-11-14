@@ -62,6 +62,28 @@ def transition_cost(tr: Transition, cfg: RoutingConfig) -> float:
             + cfg.weight_fatigue * max(0.0, tr.d_fatigue) + cfg.weight_risk * tr.risk)
 
 
+def dominates(y: Label, x: Label, tol: float) -> bool:
+    """True when astronaut state ``y`` is at least as good as ``x`` in cost and every variable.
+
+    ``tol`` is a relative tolerance: two paths of equal length that differ only by
+    floating-point noise then dominate each other, instead of both being kept.
+    """
+    up, down = 1.0 + tol, 1.0 - tol
+    return (y.cost <= x.cost * up + tol
+            and y.o2_kg >= x.o2_kg * down - tol
+            and y.eva_remaining_s >= x.eva_remaining_s * down - tol
+            and y.battery_j >= x.battery_j * down - tol
+            and y.co2_capacity_kg >= x.co2_capacity_kg * down - tol
+            and y.cooling_water_kg >= x.cooling_water_kg * down - tol
+            and y.fatigue <= x.fatigue * up + tol
+            and y.dose_sv <= x.dose_sv * up + tol
+            and abs(y.heat_storage_j) <= abs(x.heat_storage_j) * up + tol
+            and y.risk <= x.risk * up + tol
+            and y.hand_fatigue <= x.hand_fatigue * up + tol
+            and y.hydration_deficit_kg <= x.hydration_deficit_kg * up + tol
+            and y.t_s <= x.t_s * up + tol)
+
+
 class EdgeEvaluator:
     """Edge physics for one crew member, one suit and one site.
 
@@ -118,6 +140,51 @@ class EdgeEvaluator:
             (d_row, d_col, factor * self.cell_size_m) for d_row, d_col, factor in NEIGHBOR_OFFSETS)
         self._env_cache: dict[tuple[int, int, int], EnvSample] = {}
         self._heat_cache: dict[tuple[int, int, int], thermal.EnvHeat] = {}
+
+    # ---- TraversalModel protocol (used by the generic graph algorithms) ----
+    @property
+    def max_speed_m_s(self) -> float:
+        """Upper bound of the walking speed at nominal pace, m/s."""
+        return self.astronaut.preferred_speed_m_s
+
+    @property
+    def time_weight_per_s(self) -> float:
+        """Cost of one second of travel."""
+        return self.config.routing.weight_time_per_s
+
+    def successors(self, label: Label) -> tuple[list[tuple[Cell, Label]], int]:
+        """Walks to the eight neighbours, plus a rest in place when fatigue calls for it.
+
+        Returns:
+            ``(candidates, number of walks the physics refused)``.
+        """
+        cell = (label.row, label.col)
+        out: list[tuple[Cell, Label]] = []
+        refused = 0
+        for nb, dist in self.neighbors(cell):
+            tr = self.walk_edge(cell, nb, dist, label, Pace.NOMINAL)
+            if tr is None:
+                refused += 1
+                continue
+            out.append((nb, self.advance(label, nb, tr, "walk")))
+        fatigue_cfg = self.config.fatigue
+        if label.fatigue > fatigue_cfg.rest_trigger:
+            rest = self.stationary(cell, label, fatigue_cfg.rest_duration_s, TaskType.REST)
+            out.append((cell, self.advance(label, cell, rest, "rest")))
+        return out, refused
+
+    def dominates(self, y: Label, x: Label, tol: float) -> bool:
+        """Pareto dominance between two astronaut states (see ``dominates``)."""
+        return dominates(y, x, tol)
+
+    def edge_metrics(self, a: Cell, b: Cell, dist_m: float, state: WalkerState,
+                     pace: Pace = Pace.NOMINAL) -> dict[str, float] | None:
+        """Named costs of one walk for a reference state, or ``None`` when refused."""
+        tr = self.walk_edge(a, b, dist_m, state, pace)
+        if tr is None:
+            return None
+        return {"time_s": tr.dt_s, "o2_kg": tr.d_o2_kg, "energy_j": tr.energy_j,
+                "risk": tr.risk, "length_m": tr.distance_m}
 
     # ---- grid helpers ---------------------------------------------------
     def in_bounds(self, cell: Cell) -> bool:

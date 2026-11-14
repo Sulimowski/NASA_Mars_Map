@@ -19,6 +19,8 @@ route accepted by one is accepted by the others.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from ..core.schemas import Cell, CoolingMode, Label, PruneRule
 from ..physiology import emergency
 from .shelter_maps import ShelterMaps
@@ -60,6 +62,11 @@ class ConstraintChecker:
         self._return_time: list[list[float]] = maps.return_time_s.tolist()
         self._shelter_time: list[list[float]] = maps.shelter_time_s.tolist()
         self._emergency_time: list[list[float]] = maps.emergency_time_s.tolist()
+
+    def describe(self, rule: Enum, detail: str, distance_km: float) -> str:
+        """Readable sentence for a rule that blocked the search."""
+        from .pareto_astar import describe_astronaut_rule    # local: avoids an import cycle
+        return describe_astronaut_rule(rule, detail, distance_km)
 
     @property
     def dose_budget_sv(self) -> float:

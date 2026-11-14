@@ -29,6 +29,10 @@ Without it, from the site layers alone::
 In both cases the slope comes from the (downsampled) elevation, x1.25 where
 high-resolution data is missing, and the hazard x1.5 there.
 
+Obstacle height (for rovers) is the taller of the obstacle rocks, from the
+site's ``rock_abundance`` layer, and the steps in the site's own elevation,
+measured at the source resolution and averaged over the merged cell.
+
 Environment
 -----------
 Only series every site has are required. Optional series are used when present:
@@ -51,12 +55,14 @@ from typing import Any, Iterable
 import numpy as np
 from numpy.typing import NDArray
 
+from ..core.config import ObstacleConfig
 from ..core.constants import (HOUR_S, MARS_MEAN_SOLAR_FLUX_W_M2, MARS_OBLIQUITY_RAD,
                               MARS_REFERENCE_PRESSURE_PA, MARS_SCALE_HEIGHT_M, SOL_S,
                               ZERO_CELSIUS_K)
 from ..core.exceptions import EnvironmentValidationError, TerrainValidationError
 from ..core.schemas import Cell, EnvSample
 from .grid import GridTerrain, slope_from_elevation
+from .obstacles import relief_step_m, rock_obstacle_height_m
 
 MARS_HOUR_S = SOL_S / 24.0
 _IMPASSABLE_CLASS = 3
@@ -163,7 +169,8 @@ def rasterize_polygons(shape: tuple[int, int], cell_size_m: float,
 def terrain_from_site(site: Any, *, downsample: int = 1,
                       shelters_m: Iterable[tuple[float, float]] | None = None,
                       ground_model: Any | None = None,
-                      cfg: SiteAdapterConfig = SiteAdapterConfig()) -> GridTerrain:
+                      cfg: SiteAdapterConfig = SiteAdapterConfig(),
+                      obstacle_cfg: ObstacleConfig = ObstacleConfig()) -> GridTerrain:
     """Build a ``GridTerrain`` from a ``Site``.
 
     Args:
@@ -234,6 +241,16 @@ def terrain_from_site(site: Any, *, downsample: int = 1,
     slope = slope_from_elevation(elevation, cell)
     slope = np.where(nodata, np.arctan(np.tan(slope) * cfg.nodata_slope_factor), slope)
 
+    obstacles = np.zeros(shape, dtype=np.float64)
+    if "rock_abundance" in layers:
+        obstacles = rock_obstacle_height_m(
+            np.clip(_block_mean(layers["rock_abundance"], downsample), 0.0, 1.0))
+    if float(site.resolution_m) <= obstacle_cfg.relief_max_cell_m:
+        fine = np.nan_to_num(np.asarray(layers["elevation"], dtype=np.float64),
+                             nan=float(np.nanmedian(layers["elevation"])))
+        obstacles = np.maximum(obstacles, _block_mean(relief_step_m(fine, obstacle_cfg),
+                                                      downsample))
+
     shelter_mask = np.zeros(shape, dtype=np.bool_)
     for x_m, y_m in (shelters_m if shelters_m is not None else [tuple(site.start)]):
         row = min(max(int(y_m / cell), 0), shape[0] - 1)
@@ -243,7 +260,7 @@ def terrain_from_site(site: Any, *, downsample: int = 1,
         elevation=elevation, cell_size_m=cell, slope=slope,
         walk_eta=np.clip(eta, 1.0, cfg.eta_max), rock_hazard=np.clip(hazard, 0.0, 1.0),
         passable_walk=blocked < cfg.impassable_share, forbidden=forbidden,
-        is_shelter=shelter_mask)
+        is_shelter=shelter_mask, obstacle_height_m=obstacles)
 
 
 class SiteEnvironment:
