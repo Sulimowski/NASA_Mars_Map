@@ -1,56 +1,77 @@
-// iPad mode, step 1: the planet with our locations. Tap a location to fly to it and read about it.
+// iPad mode, step 1: the planet with our locations. Pick a location in the list or on the
+// globe to fly to it and read about it; "Open 3D map" opens the map of the site.
 
 import { Globe } from "./globe.js";
 
 const $ = (sel) => document.querySelector(sel);
 const side = $("#side");
 const list = $("#list");
-const hint = $("#hint");
+const info = $("#info");
 
 const fmtLat = (v) => `${Math.abs(v).toFixed(2)}° ${v < 0 ? "S" : "N"}`;
 const fmtLon = (v) => `${Math.abs(v).toFixed(2)}° ${v < 0 ? "W" : "E"}`;
 
 const isLandscape = () => innerWidth > 760 && innerWidth >= innerHeight;
 
-// The part of the screen the planet may use: right of the text, or above it in portrait.
+// The part of the screen the planet may use: between the bars, right of the panel
+// (above it in portrait).
 function freeArea() {
+  const top = $(".topbar").getBoundingClientRect().bottom;
+  const bottom = $(".statusbar").getBoundingClientRect().top;
   const r = side.getBoundingClientRect();
-  if (isLandscape()) return { left: r.right + 28, top: 0, right: innerWidth, bottom: innerHeight };
-  return { left: 0, top: 0, right: innerWidth, bottom: r.top };
+  if (isLandscape()) return { left: r.right, top, right: innerWidth, bottom };
+  return { left: 0, top, right: innerWidth, bottom: r.top };
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
 function locationItem(loc) {
-  const li = document.createElement("li");
-  li.className = "loc";
+  const li = el("li", "loc");
   li.dataset.id = loc.id;
-  li.innerHTML = `
-    <button class="loc-head" aria-expanded="false">
-      <span class="loc-name"></span>
-      <span class="loc-place"></span>
-    </button>
-    <div class="loc-body"><div>
-      <p></p>
-      <p></p>
-      <a class="go off" href="#">Looking for the map</a>
-    </div></div>`;
-  li.querySelector(".loc-name").textContent = loc.name;
-  li.querySelector(".loc-place").textContent = `${loc.place}, ${fmtLat(loc.lat)} ${fmtLon(loc.lon)}`;
-  const [summary, detail] = li.querySelectorAll("p");
-  summary.textContent = loc.summary;
-  detail.textContent = loc.detail;
-  checkViewer(loc, li.querySelector(".go"));
+  const head = el("button", "loc-head");
+  head.setAttribute("aria-expanded", "false");
+  head.append(el("span", "loc-name", loc.name), el("span", "loc-state", "checking…"),
+              el("span", "loc-place", loc.place));
+  li.append(head);
   return li;
 }
 
-// The link opens the 3D map of the location when it has been built (scripts/view3d.py).
-async function checkViewer(loc, a) {
-  let ok = false;
+// The 3D map of a location exists once it has been built (scripts/view3d.py).
+async function hasViewer(loc) {
   try {
-    ok = (await fetch(loc.viewer, { method: "HEAD" })).ok;
-  } catch { /* not served */ }
-  a.textContent = ok ? "Open the map →" : "The map of this place is not built yet";
-  a.classList.toggle("off", !ok);
-  if (ok) a.href = loc.viewer;
+    return (await fetch(loc.viewer, { method: "HEAD" })).ok;
+  } catch {
+    return false;                                  // not served
+  }
+}
+
+function showInfo(loc) {
+  info.replaceChildren();
+  if (!loc) {
+    info.append(el("p", "note", "Select a location in the list or on the globe."));
+    return;
+  }
+  const table = el("table");
+  for (const [k, v] of [["Place", loc.place], ["Latitude", fmtLat(loc.lat)], ["Longitude", fmtLon(loc.lon)]]) {
+    const tr = el("tr");
+    tr.append(el("td", "", k), el("td", "", v));
+    table.append(tr);
+  }
+  info.append(table, el("p", "", loc.summary), el("p", "note", loc.detail));
+  if (loc.ready) {
+    const a = el("a", "btn", "Open 3D map");
+    a.href = loc.viewer;
+    info.append(a);
+  } else {
+    const p = el("p", "note", "Build it first: ");
+    p.append(el("code", "", `python scripts/view3d.py data/${loc.id}`));
+    info.append(el("span", "btn off", loc.ready === false ? "3D map is not built yet" : "Checking for the 3D map…"), p);
+  }
 }
 
 async function main() {
@@ -58,6 +79,7 @@ async function main() {
   locations.forEach((loc) => list.append(locationItem(loc)));
 
   let selected = null;
+  const byId = (id) => locations.find((l) => l.id === id) ?? null;
   const globe = new Globe($("#globe"), $("#labels"), {
     texture: "assets/mars_4k.jpg",
     freeArea,
@@ -74,18 +96,30 @@ async function main() {
       li.classList.toggle("is-open", on);
       li.querySelector(".loc-head").setAttribute("aria-expanded", on);
     }
+    showInfo(byId(id));
     if (id) globe.focus(id);
     else globe.release();
   }
+  showInfo(null);
+
+  locations.forEach(async (loc) => {
+    loc.ready = await hasViewer(loc);
+    const state = list.querySelector(`[data-id="${loc.id}"] .loc-state`);
+    state.textContent = loc.ready ? "map ready" : "no map yet";
+    state.classList.toggle("ready", loc.ready);
+    if (selected === loc.id) showInfo(loc);
+  });
 
   list.addEventListener("click", (e) => {
     const head = e.target.closest(".loc-head");
     if (head) select(head.parentElement.dataset.id === selected ? null : head.parentElement.dataset.id);
   });
   addEventListener("keydown", (e) => e.key === "Escape" && select(null));
-  addEventListener("globe-touch", () => hint.classList.add("gone"), { once: true });
+  addEventListener("globe-cursor", (e) => {
+    $("#cursor").textContent = e.detail ? `${fmtLat(e.detail.lat)}, ${fmtLon(e.detail.lon)}` : "";
+  });
 
-  // The text block changes size when a place opens (in portrait that moves the planet).
+  // The panel changes size when a place opens (in portrait that moves the planet).
   new ResizeObserver(() => globe.resize()).observe(side);
   window.__gui = { globe, select };
 }

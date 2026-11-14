@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "data"],
       "port": 8765
+    },
+    {
+      "name": "gui",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-3.14", "-m", "http.server", "8770", "--bind", "127.0.0.1"],
+      "port": 8770
     }
   ]
 }

@@ -1,38 +1,42 @@
-/* Plain on purpose: text sits straight on the black, no panels, no cards, no pills.
-   Two typefaces: a Garamond for names (italic on the globe, as in an atlas) and a
-   Franklin for everything you read or tap. One colour besides white: the selected mark. */
+/* A working tool: system fonts, a panel docked to the window edge, plain tables and
+   buttons, one selection colour. Same look as the site map (mars_map/viewer/template.html).
+   Nothing is loaded from the network. */
 
 :root {
-  --bg: #050505;
-  --ink: #f4f1ec;
-  --ink-2: #a39d95;
-  --ink-3: #625d57;
-  --mark: #ff5a2b;
-  --edge: 28px;
-  --col: 372px;
-  --top: max(18px, env(safe-area-inset-top));
-  --bottom: max(26px, env(safe-area-inset-bottom));
-  --serif: "EB Garamond", Georgia, "Times New Roman", serif;
-  --sans: "Libre Franklin", "Helvetica Neue", Arial, sans-serif;
+  --space: #08090a;
+  --panel: #1b1e22;
+  --head: #23272c;
+  --line: #31363c;
+  --hover: #262b31;
+  --text: #d9dce0;
+  --dim: #8d949c;
+  --sel: #2b5f9e;
+  --link: #7db3ea;
+  --ok: #4cae6e;
+  --bar: calc(38px + env(safe-area-inset-top, 0px));
+  --status: calc(26px + env(safe-area-inset-bottom, 0px));
+  --side: 340px;
+  --ui: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; }
 
 html, body {
   height: 100%;
+  margin: 0;
   overflow: hidden;
-  background: var(--bg);
-  color: var(--ink);
-  font: 400 16px/1.5 var(--sans);
-  -webkit-font-smoothing: antialiased;
+  background: var(--space);
+  color: var(--text);
+  font: 13px/1.45 var(--ui);
+  font-variant-numeric: tabular-nums;
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
   touch-action: none;
 }
 
-button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-button:focus-visible, a:focus-visible { outline: 1px solid var(--ink); outline-offset: 4px; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
 
 /* ---------- the planet ---------- */
 
@@ -42,193 +46,185 @@ button:focus-visible, a:focus-visible { outline: 1px solid var(--ink); outline-o
   width: 100%;
   height: 100%;
   display: block;
-  opacity: 0;
-  transition: opacity 1.2s;
   cursor: grab;
 }
 #globe:active { cursor: grabbing; }
-body.ready #globe { opacity: 1; }
 
-/* Keeps the text readable when the planet is zoomed in under it. Not a panel: it has no edge. */
-.shade {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(180deg, rgba(5, 5, 5, 0.7), rgba(5, 5, 5, 0) 120px),
-    linear-gradient(90deg, rgba(5, 5, 5, 0.94) 0, rgba(5, 5, 5, 0.8) 24%, rgba(5, 5, 5, 0) 50%);
-}
+#labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 
-#labels { position: fixed; inset: 0; pointer-events: none; }
-
-/* A location: a small ring, the way a place is marked on a printed map. */
-.pin {
+/* Map labels: white text with a dark halo, as on any map over imagery. */
+.pin, .feat {
   position: absolute;
   left: 0;
   top: 0;
+  white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000;
+}
+.pin {
   width: 0;
   height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   overflow: visible;
+  cursor: pointer;
 }
 .pin-mark {
   position: absolute;
-  left: -9px;
-  top: -9px;
-  width: 18px;
-  height: 18px;
-  border: 1.5px solid var(--ink);
+  left: -6px;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
   border-radius: 50%;
-  pointer-events: none;
+  box-shadow: 0 0 0 1px #000, inset 0 0 0 1px #000;
 }
-.pin-mark::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 4px;
-  height: 4px;
-  margin: -2px;
-  border-radius: 50%;
-  background: var(--ink);
-}
-.pin.on .pin-mark { border-color: var(--mark); }
-.pin.on .pin-mark::after { background: var(--mark); }
+.pin.on .pin-mark { background: var(--link); }
 .pin-name {
   position: absolute;
-  left: 18px;
+  left: 12px;
   top: 0;
   transform: translateY(-50%);
-  padding: 12px 10px 12px 0;
-  font: italic 400 23px/1 var(--serif);
-  white-space: nowrap;
-  text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.9);
+  padding: 10px 8px 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
 }
-
-/* Names of the big landforms, for orientation only. */
-.feat {
-  position: absolute;
-  left: 0;
-  top: 0;
-  font: italic 400 14px/1 var(--serif);
-  letter-spacing: 0.07em;
-  color: rgba(244, 241, 236, 0.66);
-  white-space: nowrap;
-  text-shadow: 0 0 5px rgba(0, 0, 0, 0.9);
-}
+.feat { font-size: 11.5px; color: #cfd3d8; }
 .feat span { display: block; transform: translate(-50%, -50%); }
 
-/* ---------- top line ---------- */
+/* ---------- frame ---------- */
 
-.top {
+.topbar, .statusbar {
   position: fixed;
-  top: var(--top);
-  left: var(--edge);
-  right: var(--edge);
+  left: 0;
+  right: 0;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  pointer-events: none;
+  align-items: center;
+  background: var(--head);
+  white-space: nowrap;
 }
-.top > * { pointer-events: auto; }
-h1 { font: 500 15px/1 var(--sans); }
+.topbar {
+  top: 0;
+  height: var(--bar);
+  padding: env(safe-area-inset-top, 0px) 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 13px; font-weight: 600; }
+.grow { flex: 1; }
 
+.modes { display: flex; }
 .modes button {
-  padding: 12px 0 12px 26px;
-  font-size: 15px;
-  color: var(--ink-3);
+  padding: 3px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  cursor: pointer;
 }
-.modes button.on {
-  color: var(--ink);
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 6px;
+.modes button + button { border-left: 0; }
+.modes button.on { background: var(--sel); border-color: var(--sel); color: #fff; }
+.modes button:disabled { color: var(--dim); cursor: default; }
+
+.statusbar {
+  bottom: 0;
+  height: var(--status);
+  gap: 18px;
+  padding: 0 12px env(safe-area-inset-bottom, 0px);
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 12px;
 }
-.modes button:disabled { cursor: default; }
+#cursor { color: var(--text); }
 
-/* ---------- places ---------- */
-
-.places {
+.panel {
   position: fixed;
-  left: var(--edge);
-  bottom: var(--bottom);
-  width: var(--col);
+  left: 0;
+  top: var(--bar);
+  bottom: var(--status);
+  width: var(--side);
+  overflow-y: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
   touch-action: pan-y;
 }
-#list { list-style: none; }
-.loc + .loc { margin-top: 10px; }
-
-.loc-head { display: block; width: 100%; padding: 6px 0; text-align: left; }
-.loc-name {
-  display: block;
-  font: 400 40px/1.02 var(--serif);
-  letter-spacing: -0.01em;
-  transition: font-size 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+section { border-bottom: 1px solid var(--line); }
+h2 {
+  margin: 0;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--dim);
+  background: var(--head);
+  border-bottom: 1px solid var(--line);
 }
-.loc.is-open .loc-name { font-size: 64px; }
-.loc-place { display: block; margin-top: 8px; font-size: 15px; line-height: 1.4; color: var(--ink-2); }
 
-.loc-body {
+/* ---------- locations ---------- */
+
+#list { list-style: none; margin: 0; padding: 0; }
+.loc-head {
   display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+  grid-template-columns: 1fr auto;
+  gap: 0 10px;
+  width: 100%;
+  padding: 7px 12px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
 }
-.loc-body > div { overflow: hidden; }
-.loc.is-open .loc-body { grid-template-rows: 1fr; }
+.loc:last-child .loc-head { border-bottom: 0; }
+.loc-head:hover { background: var(--hover); }
+.loc.is-open .loc-head { background: var(--sel); color: #fff; }
+.loc-name { font-weight: 600; }
+.loc-state { color: var(--dim); }
+.loc-state.ready { color: var(--ok); }
+.loc-place { grid-column: 1 / -1; color: var(--dim); }
+.loc.is-open .loc-state, .loc.is-open .loc-place { color: #d5e3f3; }
 
-.loc-body p { margin-top: 16px; color: #dcd7d0; }
-.loc-body p + p { margin-top: 8px; color: var(--ink-2); }
+#info { padding: 9px 12px 12px; }
+#info table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+#info td { padding: 2px 0; vertical-align: top; }
+#info td:first-child { color: var(--dim); width: 34%; }
+#info p { margin: 0 0 7px; }
+.note { color: var(--dim); }
 
-.go {
+.btn {
   display: inline-block;
-  margin-top: 10px;
-  padding: 14px 0;
-  font: 500 19px/1 var(--sans);
-  color: var(--ink);
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 7px;
+  margin-top: 4px;
+  padding: 6px 14px;
+  background: var(--sel);
+  border: 1px solid var(--sel);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
 }
-.go:active { color: var(--mark); }
-.go.off { color: var(--ink-3); text-decoration: none; pointer-events: none; }
+.btn:hover { background: #3470b8; }
+.btn.off { background: none; border-color: var(--line); color: var(--dim); font-weight: 400; pointer-events: none; }
+code { font: 12px Consolas, "SF Mono", Menlo, monospace; color: var(--text); user-select: text; -webkit-user-select: text; }
 
-/* ---------- small print ---------- */
-
-.hint, .credit, .loading {
+.loading {
   position: fixed;
-  right: var(--edge);
-  font-size: 13px;
-  color: var(--ink-3);
+  left: var(--side);
+  right: 0;
+  top: 50%;
+  margin: 0;
+  text-align: center;
+  color: var(--dim);
   pointer-events: none;
 }
-.credit { bottom: var(--bottom); }
-.hint { bottom: calc(var(--bottom) + 22px); color: var(--ink-2); transition: opacity 0.6s; }
-.hint.gone { opacity: 0; }
-.loading {
-  top: 50%;
-  left: calc(var(--edge) + var(--col));
-  text-align: center;
-  font: italic 400 20px/1 var(--serif);
-  color: var(--ink-2);
-  transition: opacity 0.6s;
-}
-body.ready .loading { opacity: 0; }
+body.ready .loading { display: none; }
 
-/* ---------- portrait: the text goes under the planet ---------- */
+/* ---------- portrait: the panel goes under the planet ---------- */
 
 @media (orientation: portrait), (max-width: 760px) {
-  :root { --edge: 22px; }
-  .shade {
-    background:
-      linear-gradient(180deg, rgba(5, 5, 5, 0.7), rgba(5, 5, 5, 0) 120px),
-      linear-gradient(0deg, rgba(5, 5, 5, 0.96) 0, rgba(5, 5, 5, 0.85) 26%, rgba(5, 5, 5, 0) 52%);
+  .panel {
+    top: auto;
+    width: auto;
+    right: 0;
+    max-height: 46%;
+    border-right: 0;
+    border-top: 1px solid var(--line);
   }
-  .places { right: var(--edge); width: auto; max-width: 560px; }
-  .hint { right: auto; left: var(--edge); bottom: auto; top: calc(var(--top) + 44px); }
-  .loading { left: 0; top: 34%; }
+  .loading { left: 0; top: 30%; }
   .credit { display: none; }
-}
-
-@media (max-width: 480px) {
-  .loc-name { font-size: 34px; }
-  .loc.is-open .loc-name { font-size: 48px; }
 }

@@ -41,6 +41,10 @@ const PLANET_FS = /* glsl */ `
     vec3 col = c * (0.045 + 1.12 * day);
     float rim = pow(1.0 - max(dot(n, v), 0.0), 2.6);
     col += vec3(0.95, 0.6, 0.4) * rim * (0.03 + 0.2 * day);
+    // Graticule: a thin line every 30 degrees of latitude and longitude.
+    vec2 g = vUv * vec2(12.0, 6.0);
+    vec2 gl = 1.0 - smoothstep(vec2(0.0), fwidth(g) * 1.3, abs(fract(g - 0.5) - 0.5));
+    col = mix(col, vec3(0.9), max(gl.x, gl.y) * 0.17 * (0.3 + 0.7 * day));
     gl_FragColor = vec4(col * fade, 1.0);
   }`;
 
@@ -65,7 +69,7 @@ export class Globe {
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.setClearColor(0x050505, 1);
+    this.renderer.setClearColor(0x08090a, 1);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(FOV, 1, 0.05, 200);
 
@@ -300,6 +304,19 @@ export class Globe {
     };
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+
+    // Latitude and longitude under the pointer, for the status bar ("globe-cursor" event).
+    const ray = new THREE.Raycaster();
+    const report = (detail) => el.dispatchEvent(new CustomEvent("globe-cursor", { bubbles: true, detail }));
+    el.addEventListener("pointermove", (e) => {
+      ray.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), this.camera);
+      const hit = ray.intersectObject(this.planetMesh)[0];
+      if (!hit) return report(null);
+      const p = this.planet.worldToLocal(hit.point).normalize();
+      const lon = Math.atan2(p.z, -p.x) / DEG - 180;          // inverse of latLonToVec3
+      report({ lat: Math.asin(p.y) / DEG, lon: lon < -180 ? lon + 360 : lon });
+    });
+    el.addEventListener("pointerleave", () => report(null));
 
     el.addEventListener("wheel", (e) => {
       e.preventDefault();
