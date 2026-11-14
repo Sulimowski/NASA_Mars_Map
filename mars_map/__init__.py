@@ -1,3 +1,4 @@
+from .environment import Environment
 from .site import (DATA_DIR, LAYER_SPEC, PROJECT_ROOT, TERRAIN_CLASSES,
                    MissionParams, Site, Target, slope_deg)
 
@@ -14,4 +15,4 @@ def load_stub() -> Site:
 
 
 __all__ = ["Site", "Target", "MissionParams", "LAYER_SPEC", "TERRAIN_CLASSES",
-           "slope_deg", "load_stub", "PROJECT_ROOT", "DATA_DIR", "STUB_DIR"]
+           "slope_deg", "load_stub", "PROJECT_ROOT", "DATA_DIR", "STUB_DIR", "Environment"]

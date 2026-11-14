@@ -1,4 +1,6 @@
 > Test map site and data format for the algorithms: see [DATA_CONTRACT.md](DATA_CONTRACT.md)
+>
+> Radiation and temperature maps built on that site: see [ENV_MAPS.md](ENV_MAPS.md)
 
 # Algoritms First task set 
 
