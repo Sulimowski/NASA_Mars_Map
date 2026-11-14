@@ -10,7 +10,10 @@ Everything is inside the file (terrain, every layer as a texture, targets, serie
 Fonts and the rover photos come from the internet; without it the page still works.
 
 Shown automatically when the files are there:
-* `<site>/astronaut_plan.json`  the EVA route written by the Alg router;
+* `<site>/eva_plans.json`       the three EVA plans (shielded, eco, science) written by
+                                `python -m mars_map.pipeline --site <site>`; the page switches
+                                between them. The older single `astronaut_plan.json` is still
+                                read when there is no `eva_plans.json`;
 * Curiosity's track, for regions the rover drove through.
 """
 
@@ -176,12 +179,30 @@ def build_layers(site: Site) -> tuple[str, str, list[dict]]:
         from mars_map.fusion.science import MINERAL_NAMES
         cat("mineral_dominant", "Dominant mineral", "Science", MINERAL_COLORS, MINERAL_NAMES,
             note="Which mineral group has the clearest CRISM signature. Transparent = none detected.")
-    for key, title in (("mineral_sulfate", "Sulfate index"), ("mineral_hydration", "Hydration index"),
-                       ("mineral_clay", "Clay index"), ("mineral_silica", "Silica index")):
+    from mars_map.fusion.science import DETECTION
+    for key, title in (("mineral_sulfate", "Sulfate index"), ("mineral_sulfate_mono", "Monohydrated sulfate index"),
+                       ("mineral_hydration", "Hydration index"), ("mineral_clay", "Clay index"),
+                       ("mineral_silica", "Silica index"), ("mineral_hematite", "Hematite index"),
+                       ("mineral_olivine", "Olivine index"), ("mineral_pyroxene", "Pyroxene index")):
         if key in L:
-            hi = float(np.nanpercentile(L[key], 99.5))
-            cont(key, title, "Science", "viridis", "index", vmin=0, vmax=max(hi, 1e-6), fmt=".3f",
-                 note="CRISM spectral index, unitless. Higher = stronger signature, noisy near zero.")
+            lo_, hi_ = DETECTION[key]          # same colour scale in every region
+            cont(key, title, "Science", "viridis", "index", vmin=lo_, vmax=hi_, fmt=".3f",
+                 alpha=np.clip((np.nan_to_num(L[key], nan=lo_) - lo_) / (hi_ - lo_) * 4, 0, 1),
+                 note="CRISM spectral index, unitless. The scale runs from the detection threshold to a "
+                      "strong signature and is the same for every region. Transparent = below the threshold.")
+
+    # --- other measurements ------------------------------------------------------
+    cont("roughness", "Roughness", "Terrain", "cividis", "m", lo=0, hi=99, fmt=".2f",
+         note="Local relief: spread of elevation in a ~7 m window.")
+    cont("themis_night_ir", "Night infrared", "Surface", "inferno", "DN", fmt=".0f",
+         note="THEMIS night-time brightness, 100 m per pixel. Bright = warm at night = rock.")
+    cont("themis_day_ir", "Day infrared", "Surface", "inferno", "DN", fmt=".0f",
+         note="THEMIS day-time brightness, 100 m per pixel. Mostly shows sunlit and shaded slopes.")
+    cont("albedo", "Albedo", "Surface", "gray", "0..1", fmt=".2f",
+         note="TES, 7.4 km per pixel: one value for a site this small. Bright = dust, dark = sand or rock.")
+    if "source_res" in L:
+        cont("source_res", "Elevation source", "Data", "viridis_r", "m per pixel", fmt=".0f",
+             note="Resolution of the terrain model each cell came from. Higher = coarser data.")
     return encode(base), caption, out
 
 
@@ -209,6 +230,48 @@ def rover_track(site: Site) -> list[list[float]]:
     except Exception as e:                                   # no network, no cache: just no track
         print(f"  rover track skipped: {e}")
         return []
+
+
+def _thin(points: list, limit: int = 600) -> list:
+    keep = max(1, len(points) // limit)
+    return points[::keep] + ([points[-1]] if points and (len(points) - 1) % keep else [])
+
+
+def eva_plans(folder: Path) -> dict | None:
+    """The three EVA plans of the planner (`python -m mars_map.pipeline --site <folder>`),
+    reduced to what the page draws. None when `<folder>/eva_plans.json` is not there."""
+    path = folder / "eva_plans.json"
+    if not path.exists():
+        return None
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    cond = doc.get("conditions", {})
+    items = []
+    for key, p in doc.get("strategies", {}).items():
+        phys, radio = p.get("physiology") or {}, p.get("radio") or {}
+        notes = []                       # composed here in English from the structured fields
+        if p.get("skipped_targets"):
+            notes.append("Left out: " + ", ".join(t["name"] for t in p["skipped_targets"]) + ".")
+        if radio.get("shadow_m"):
+            notes.append(f"No radio contact with the base on {radio['shadow_m']:.0f} m of the route; "
+                         f"{len(radio.get('relay_points', []))} relay drop points proposed.")
+        if phys.get("status") and phys["status"] != "OK":
+            notes.append(f"Physiology check {phys['status']}: {phys.get('message', '')}".strip())
+        notes += [str(w) for w in phys.get("warnings", []) if w]
+        items.append({
+            "id": key, "title": p.get("title", key), "feasible": bool(p.get("feasible")),
+            "physiology": phys.get("status"),
+            "points": _thin([[w["x_m"], w["y_m"]] for w in p.get("waypoints", [])]),
+            "summary": p.get("summary", {}), "usage": p.get("usage_pct", {}),
+            "targets": p.get("visited_targets", []), "warnings": notes,
+        })
+    if not items:
+        return None
+    rate, temp = cond.get("dose_rate_usv_h") or {}, cond.get("ground_temp_c") or {}
+    print(f"  plans: {', '.join(i['id'] for i in items)} from {path.name} (sol {cond.get('sol')})")
+    return {"sol": cond.get("sol"), "ltst": cond.get("ltst_h"),
+            "particleEvent": bool(cond.get("particle_event")),
+            "doseRate": rate.get("median"), "groundTemp": temp.get("median"),
+            "items": items}
 
 
 def three_source() -> str | None:
@@ -257,15 +320,19 @@ def build(folder: Path) -> Path:
     targets = []
     for t in site.targets:
         url = re.search(r"https?://\S+", t.note or "")
-        kind = "rover" if t.name.lower().startswith("curiosity") else (
+        kind = "rover" if " stop, sol " in t.name.lower() else (
             "mineral" if "exposure" in t.name.lower() else "site")
         targets.append({"name": t.name, "x": t.x_m, "y": t.y_m, "priority": t.priority, "dwell": t.dwell_min,
                         "kind": kind, "photo": url.group(0).rstrip(".") if url else None,
                         "note": re.sub(r"\s*Photo from the spot:\s*https?://\S+", "", t.note or "").strip()})
 
+    plans = eva_plans(folder)
+    if plans is not None:
+        # Without a radiation series the planner falls back to a typical Gale dose.
+        plans["radiationMeasured"] = bool(site.series.get("radiation_msv_per_sol"))
     route = None
     plan_path = folder / "astronaut_plan.json"
-    if plan_path.exists():
+    if plans is None and plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         pts = plan.get("waypoints", [])
         keep = max(1, len(pts) // 600)
@@ -289,7 +356,7 @@ def build(folder: Path) -> Path:
         "probes": probes, "terrainNames": list(TERRAIN_CLASSES.values()),
         "mineralNames": mineral_names,
         "start": list(site.start), "targets": targets, "noGo": site.no_go,
-        "track": rover_track(site), "route": route, "series": site.series,
+        "track": rover_track(site), "route": route, "plans": plans, "series": site.series,
         "mission": {"maxSlope": m.max_slope_deg, "hardSlope": m.hard_max_slope_deg, "evaHours": m.eva_max_hours,
                     "maxDose": m.max_dose_msv, "maxKm": m.max_distance_km, "speed": m.walk_speed_flat_kmh},
         "stats": {"blocked": float(blocked.mean()),

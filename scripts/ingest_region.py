@@ -1,10 +1,14 @@
-"""Part A end to end on real NASA data, for one region (default: Gale, Mount Sharp).
+"""Part A end to end on real NASA data, for one region (default: gale_boxwork).
 
 catalog (ODE + STAC) -> pick DTMs -> fetch -> normalize -> global layers -> time series
+-> minerals -> optical -> thermal inertia
 
-    .venv\\Scripts\\python scripts\\ingest_gale.py                # ~150 MB of traffic, crops only
-    .venv\\Scripts\\python scripts\\ingest_gale.py --full         # download whole DTM files instead
-    .venv\\Scripts\\python scripts\\ingest_gale.py --rad-sols 453-482
+    .venv\\Scripts\\python scripts\\ingest_region.py --rad-sols 4640-4669        # Gale boxwork
+    .venv\\Scripts\\python scripts\\ingest_region.py --region jezero_delta --rad-sols ""
+    .venv\\Scripts\\python scripts\\ingest_region.py --full      # download whole DTM files instead
+
+Regions are defined in mars_map/grid.py (REGIONS). Radiation (--rad-sols, 18 MB per sol)
+exists only for regions near Gale; pass "" elsewhere.
 
 Everything is cached: a second run does not download anything again.
 Output: data/catalog.sqlite, data/raw/, data/processed/<region>/.
@@ -25,7 +29,8 @@ from mars_map.ingest.loaders import load_catalog  # noqa: E402
 from mars_map.ingest.normalize import ELEVATION_RANGE_M, normalize  # noqa: E402
 from mars_map.ingest.minerals import ingest_minerals, load_ode_crism  # noqa: E402
 from mars_map.ingest.optical import ingest_optical, load_ode_hirise_ortho  # noqa: E402
-from mars_map.ingest.series import load_rad, load_rems  # noqa: E402
+from mars_map.ingest.rover import rover_for  # noqa: E402
+from mars_map.ingest.series import load_m20_weather, load_rad, load_rems  # noqa: E402
 from mars_map.ingest.thermal import ingest_thermal_inertia  # noqa: E402
 
 
@@ -106,7 +111,7 @@ def main():
     if not args.skip_catalog:
         load_catalog(db, grid.bounds_lonlat, max_items=args.max_items)
     dtms = find_products(db, grid.bounds_lonlat, "dtm")
-    print(f"  find_products(gale_bbox, 'dtm') -> {len(dtms)} products, finest:")
+    print(f"  find_products(bbox, 'dtm') -> {len(dtms)} products, finest:")
     for p in dtms[:4]:
         print(f"    {p.source:11s} {p.resolution_m:5.1f} m  cover {p.coverage:4.0%}  {p.url}")
 
@@ -117,10 +122,16 @@ def main():
     print("[3/7] global coarse layers")
     ingest_global_layers(db, grid)
 
-    print("[4/7] time series (Curiosity)")
-    for name, n in load_rems(db, grid.name).items():
-        print(f"  REMS {name}: {n} sols")
-    load_rad(db, grid.name, parse_sols(args.rad_sols))
+    rover = rover_for(grid)
+    print(f"[4/7] time series ({rover.name if rover else 'no rover near this region'})")
+    if rover and rover.key == "msl":
+        for name, n in load_rems(db, grid.name).items():
+            print(f"  REMS {name}: {n} sols")
+        load_rad(db, grid.name, parse_sols(args.rad_sols))
+    elif rover and rover.key == "m20":
+        for name, n in load_m20_weather(db, grid.name).items():
+            print(f"  MEDA {name}: {n} sols")
+        print("  no radiation series: Perseverance carries no radiation detector")
 
     print("[5/7] minerals (CRISM)")
     if not args.skip_catalog:

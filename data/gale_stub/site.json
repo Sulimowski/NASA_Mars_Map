@@ -1,0 +1,403 @@
+{
+  "name": "gale_stub",
+  "source": "synthetic (seed=42); Gale/Mount Sharp-like, NOT real data",
+  "resolution_m": 2.0,
+  "center_lat": -4.75,
+  "center_lon": 137.38,
+  "shape": [
+    1000,
+    1000
+  ],
+  "grid_convention": "layer[row, col]; row 0 = north, col 0 = west; points are (x_m east, y_m south) from NW corner",
+  "layer_spec": {
+    "elevation": {
+      "unit": "m",
+      "meaning": "Height above Mars datum"
+    },
+    "slope": {
+      "unit": "deg",
+      "meaning": "Terrain slope, derived from elevation"
+    },
+    "roughness": {
+      "unit": "m",
+      "meaning": "Local relief (std of elevation in a small window)"
+    },
+    "rock_abundance": {
+      "unit": "0..1",
+      "meaning": "Fraction of area covered by rocks"
+    },
+    "thermal_inertia": {
+      "unit": "J m^-2 K^-1 s^-1/2",
+      "meaning": "Low = loose sand/dust, high = rock"
+    },
+    "terrain_class": {
+      "unit": "class",
+      "meaning": "See TERRAIN_CLASSES"
+    },
+    "science_score": {
+      "unit": "0..1",
+      "meaning": "How interesting the spot is for the mission goals"
+    },
+    "nodata": {
+      "unit": "bool",
+      "meaning": "True where real data is missing"
+    }
+  },
+  "terrain_classes": {
+    "0": "bedrock",
+    "1": "sand",
+    "2": "boulders",
+    "3": "impassable"
+  },
+  "series": {
+    "sol": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
+    ],
+    "radiation_msv_per_sol": [
+      0.688,
+      0.603,
+      0.715,
+      0.663,
+      0.684,
+      0.671,
+      0.653,
+      0.639,
+      0.647,
+      0.653,
+      0.632,
+      0.694,
+      0.723,
+      0.644,
+      0.714,
+      0.635,
+      0.682,
+      2.781,
+      2.738,
+      0.647,
+      0.692,
+      0.675,
+      0.641,
+      0.671,
+      0.713,
+      0.7,
+      0.689,
+      0.689,
+      0.628,
+      0.666
+    ],
+    "dust_opacity_tau": [
+      0.56,
+      0.59,
+      0.65,
+      0.6,
+      0.62,
+      0.55,
+      0.54,
+      0.62,
+      0.56,
+      0.68,
+      0.5,
+      0.6,
+      0.57,
+      0.6,
+      0.61,
+      0.6,
+      0.58,
+      0.55,
+      0.64,
+      0.61,
+      0.57,
+      0.64,
+      0.98,
+      1.48,
+      1.83,
+      1.43,
+      0.89,
+      0.73,
+      0.67,
+      0.63
+    ],
+    "temp_min_c": [
+      -80.6,
+      -75.7,
+      -80.2,
+      -76.4,
+      -79.3,
+      -76.6,
+      -79.8,
+      -76.3,
+      -80.0,
+      -70.6,
+      -77.1,
+      -80.1,
+      -81.1,
+      -75.2,
+      -78.0,
+      -79.3,
+      -79.4,
+      -76.0,
+      -73.7,
+      -77.4,
+      -72.6,
+      -75.4,
+      -77.8,
+      -72.8,
+      -78.6,
+      -77.9,
+      -73.8,
+      -76.6,
+      -79.3,
+      -73.5
+    ],
+    "temp_max_c": [
+      -15.8,
+      -20.7,
+      -10.5,
+      -13.8,
+      -8.7,
+      -14.8,
+      -13.2,
+      -18.2,
+      -9.8,
+      -16.2,
+      -9.7,
+      -9.0,
+      -14.2,
+      -12.0,
+      -10.2,
+      -11.6,
+      -10.1,
+      -13.7,
+      -13.9,
+      -14.1,
+      -15.2,
+      -10.8,
+      -15.3,
+      -22.9,
+      -19.7,
+      -12.9,
+      -11.1,
+      -16.0,
+      -14.6,
+      -17.8
+    ],
+    "wind_max_ms": [
+      5.0,
+      6.0,
+      6.5,
+      3.9,
+      6.9,
+      6.9,
+      9.2,
+      8.6,
+      8.2,
+      10.3,
+      6.5,
+      5.3,
+      17.2,
+      7.8,
+      7.5,
+      12.8,
+      10.3,
+      9.0,
+      2.0,
+      11.5,
+      7.6,
+      8.9,
+      13.8,
+      20.3,
+      23.0,
+      19.6,
+      12.7,
+      8.6,
+      8.9,
+      9.7
+    ]
+  },
+  "start": [
+    1000.0,
+    120.0
+  ],
+  "targets": [
+    {
+      "name": "Boxwork ridges",
+      "x_m": 1170.0,
+      "y_m": 920.0,
+      "priority": 1,
+      "dwell_min": 45,
+      "note": "Main goal: mineral veins at the foot of the mesa"
+    },
+    {
+      "name": "Mesa top outcrop",
+      "x_m": 1380.0,
+      "y_m": 1080.0,
+      "priority": 1,
+      "dwell_min": 30,
+      "note": "Only reachable via the NW ramp"
+    },
+    {
+      "name": "Fresh crater ejecta",
+      "x_m": 860.0,
+      "y_m": 1380.0,
+      "priority": 2,
+      "dwell_min": 25,
+      "note": "Deep-origin rocks; boulder field, careful footing"
+    },
+    {
+      "name": "Dune margin",
+      "x_m": 480.0,
+      "y_m": 820.0,
+      "priority": 3,
+      "dwell_min": 15,
+      "note": "Sand sample at the edge, do not walk into the dunes"
+    },
+    {
+      "name": "Clay-bearing layer",
+      "x_m": 1000.0,
+      "y_m": 1820.0,
+      "priority": 2,
+      "dwell_min": 30,
+      "note": "Upslope toward Mount Sharp"
+    }
+  ],
+  "no_go": [
+    [
+      [
+        755.0,
+        1450.0
+      ],
+      [
+        740.9,
+        1502.5
+      ],
+      [
+        702.5,
+        1540.9
+      ],
+      [
+        650.0,
+        1555.0
+      ],
+      [
+        597.5,
+        1540.9
+      ],
+      [
+        559.1,
+        1502.5
+      ],
+      [
+        545.0,
+        1450.0
+      ],
+      [
+        559.1,
+        1397.5
+      ],
+      [
+        597.5,
+        1359.1
+      ],
+      [
+        650.0,
+        1345.0
+      ],
+      [
+        702.5,
+        1359.1
+      ],
+      [
+        740.9,
+        1397.5
+      ]
+    ],
+    [
+      [
+        380.0,
+        950.0
+      ],
+      [
+        359.9,
+        1025.0
+      ],
+      [
+        305.0,
+        1079.9
+      ],
+      [
+        230.0,
+        1100.0
+      ],
+      [
+        155.0,
+        1079.9
+      ],
+      [
+        100.1,
+        1025.0
+      ],
+      [
+        80.0,
+        950.0
+      ],
+      [
+        100.1,
+        875.0
+      ],
+      [
+        155.0,
+        820.1
+      ],
+      [
+        230.0,
+        800.0
+      ],
+      [
+        305.0,
+        820.1
+      ],
+      [
+        359.9,
+        875.0
+      ]
+    ]
+  ],
+  "mission": {
+    "max_slope_deg": 15.0,
+    "hard_max_slope_deg": 25.0,
+    "walk_speed_flat_kmh": 2.0,
+    "eva_max_hours": 6.0,
+    "return_reserve_frac": 0.25,
+    "max_dose_msv": 1.0,
+    "max_distance_km": 8.0
+  }
+}

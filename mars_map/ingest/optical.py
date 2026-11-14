@@ -130,6 +130,13 @@ def ingest_optical(db: sqlite3.Connection, grid: RegionGrid, max_images: int = 2
         out["optical_texture"] = normalize(db, grid, "optical_texture", "0..1", "hirise_ortho",
                                            [texture_file(p) for p in gray], res,
                                            processed_root=processed_root)
+    if not gray:
+        # No HiRISE orthoimage here: fall back to the CTX orthoimage that comes with the
+        # CTX DTM (20 m, reflectance 0..1). Good for looking; too coarse for a texture proxy.
+        ctx, res = crops("ctx_optical")
+        if ctx:
+            out["optical"] = normalize(db, grid, "optical", "0..1", "ctx_optical", ctx, res,
+                                       valid_range=(1e-6, 10.0), processed_root=processed_root)
     for band, layer in COLOR_BANDS.items():
         color, res = crops("hirise_color", band)
         if color:

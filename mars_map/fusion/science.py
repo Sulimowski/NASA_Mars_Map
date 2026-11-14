@@ -7,8 +7,8 @@
 * `ridge_index`      -- how much a cell stands above its surroundings (boxwork = ridges)
 * `pick_base`, `mineral_targets` -- where to start and what to visit
 
-All thresholds are relative to the region itself (robust statistics), because CRISM
-indices are unitless and their noise level differs from scene to scene.
+Mineral detection uses fixed thresholds (`DETECTION`), the same in every region, so
+scores are comparable between regions.
 """
 
 from __future__ import annotations
@@ -30,35 +30,51 @@ MINERALS = {
     "mineral_pyroxene": (0.4, "Pyroxene"),
 }
 MINERAL_NAMES = ["none"] + [label for _, label in MINERALS.values()]
-# An index counts as detected above median + 3 robust sigma of the (smoothed) map.
-# At 2 sigma, eight noisy indices together flag ~15 % of any scene as "minerals".
-DETECTION_SIGMA = 3.0
+
+# One fixed rule for every region: an index scores 0 at `lo` or below and 1 at `hi` or
+# above, linear in between. So a score means the same strength of signal in Gale, in
+# Jezero or anywhere else, and two regions can be compared.
+#
+# (lo, hi) per CRISM index. Working assumptions, not published calibrations. They were
+# set from the three regions we have (Gale boxwork, Jezero delta, Nili Planum), after
+# smoothing over one CRISM pixel, where the noise of a band depth is about 0.002:
+#   * `lo` is above the level every region reaches by noise and scene-to-scene offset;
+#   * `hi` is about the strongest value seen in a region where the mineral is known.
+# Olivine has a large background (median 0.043 over the Gale boxwork, which is not an
+# olivine site; 0.084 over the Jezero delta, which is), so its floor is high.
+# Caveat: a CRISM scene can be offset by a few 0.001 as a whole. A region whose scene
+# sits low will under-detect; that is the price of a rule that is the same everywhere.
+DETECTION = {
+    "mineral_sulfate": (0.010, 0.015),
+    "mineral_sulfate_mono": (0.007, 0.015),
+    "mineral_clay": (0.008, 0.020),
+    "mineral_hydration": (0.004, 0.020),
+    "mineral_silica": (0.0045, 0.012),
+    "mineral_hematite": (0.005, 0.020),
+    "mineral_olivine": (0.070, 0.120),
+    "mineral_pyroxene": (0.010, 0.050),
+}
 
 
-def detection_score(index: np.ndarray, smooth_px: int = 0) -> np.ndarray:
-    """CRISM index -> 0..1. 0 at the detection threshold or below, 1 at the 99.5th percentile.
+def detection_score(index: np.ndarray, lo: float, hi: float, smooth_px: int = 0) -> np.ndarray:
+    """CRISM index -> 0..1: 0 at `lo` or below, 1 at `hi` or above. No data scores 0.
 
     `smooth_px` > 0 first averages over a (2*smooth_px+1) window: single CRISM pixels
-    are speckle, a real exposure spans several. The threshold is median +
-    DETECTION_SIGMA * robust sigma (from the MAD), but never below zero: a negative
-    band depth is no absorption at all.
+    are speckle, a real exposure spans several.
     """
+    missing = ~np.isfinite(index)
+    if missing.all():
+        return np.zeros(index.shape, np.float32)
     if smooth_px > 0:
         index = box_mean(np.nan_to_num(index, nan=float(np.nanmedian(index))), smooth_px)
-    v = index[np.isfinite(index)]
-    if v.size == 0:
-        return np.zeros(index.shape, np.float32)
-    med = np.median(v)
-    sigma = 1.4826 * np.median(np.abs(v - med))
-    lo = max(0.0, med + DETECTION_SIGMA * sigma)
-    hi = np.percentile(v, 99.5)
-    if hi <= lo:
-        return np.zeros(index.shape, np.float32)
-    return np.clip((np.nan_to_num(index, nan=lo) - lo) / (hi - lo), 0, 1).astype(np.float32)
+    score = np.clip((np.nan_to_num(index, nan=lo) - lo) / (hi - lo), 0, 1).astype(np.float32)
+    score[missing] = 0.0
+    return score
 
 
 def mineral_scores(layers: dict[str, np.ndarray], smooth_px: int = 0) -> dict[str, np.ndarray]:
-    return {name: detection_score(layers[name], smooth_px) for name in MINERALS if name in layers}
+    return {name: detection_score(layers[name], *DETECTION[name], smooth_px)
+            for name in MINERALS if name in layers}
 
 
 def science_from_minerals(layers: dict[str, np.ndarray],

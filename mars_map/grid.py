@@ -132,4 +132,16 @@ GALE_BOXWORK = RegionGrid("gale_boxwork", center_lat=-4.812, center_lon=137.383,
 GALE_MOUNT_SHARP = RegionGrid("gale_mount_sharp", center_lat=-4.75, center_lon=137.38,
                               size_m=2000.0, resolution_m=2.0)
 
-REGIONS = {g.name: g for g in (GALE_BOXWORK, GALE_MOUNT_SHARP)}
+# jezero_delta: the front of the river delta in Jezero crater (Three Forks, Hawksbill Gap,
+# the sample depot). Centre taken from Perseverance's track (M20 waypoints feed): the rover
+# worked here during sols 400-800, with its longest stops at 18.459 N 77.406 E (33 sols)
+# and 18.451 N 77.401 E (27 sols). Clays, carbonates and olivine are all within the square.
+JEZERO_DELTA = RegionGrid("jezero_delta", center_lat=18.458, center_lon=77.402,
+                          size_m=2000.0, resolution_m=2.0)
+
+# nili_planum: the plains outside the western rim of Jezero, where Perseverance arrived
+# after climbing out of the crater (sols 1600+, longest stop 46 sols at 18.428 N 77.235 E).
+NILI_PLANUM = RegionGrid("nili_planum", center_lat=18.432, center_lon=77.238,
+                         size_m=2000.0, resolution_m=2.0)
+
+REGIONS = {g.name: g for g in (GALE_BOXWORK, GALE_MOUNT_SHARP, JEZERO_DELTA, NILI_PLANUM)}

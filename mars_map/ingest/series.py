@@ -78,6 +78,42 @@ def load_rems(db: sqlite3.Connection, region: str, raw_dir: str | Path = RAW_DIR
             for name, values in series.items() if values}
 
 
+M20_WEATHER_URL = "https://mars.nasa.gov/rss/api/?feed=weather&category=mars2020&feedtype=json"
+M20_FIELDS = {"min_temp": "temp_min_c", "max_temp": "temp_max_c", "pressure": "pressure_pa"}
+
+
+def parse_m20_weather(feed: dict) -> dict[str, dict[int, float]]:
+    """Perseverance (MEDA) weather feed -> {series name: {sol: value}}, missing values dropped."""
+    out: dict[str, dict[int, float]] = {name: {} for name in M20_FIELDS.values()}
+    for rec in feed.get("sols", []):
+        sol = _number(rec.get("sol"))
+        if sol is None:
+            continue
+        for field, name in M20_FIELDS.items():
+            v = _number(rec.get(field))
+            if v is not None:
+                out[name][int(sol)] = v
+    return out
+
+
+def load_m20_weather(db: sqlite3.Connection, region: str, raw_dir: str | Path = RAW_DIR,
+                     refresh: bool = False) -> dict[str, int]:
+    """Perseverance weather (Jezero). The public feed holds only a handful of sols.
+
+    There is no radiation instrument on Perseverance, so a Jezero region gets no
+    radiation series at all rather than Curiosity's numbers from another crater.
+    """
+    region_id(db, region)
+    add_source(db, "meda", "MEDA", "mars.nasa.gov", base_url=M20_WEATHER_URL)
+    path = Path(raw_dir) / "m20" / "m20_weather.json"
+    if refresh:
+        path.unlink(missing_ok=True)
+    fetch(M20_WEATHER_URL, path)
+    series = parse_m20_weather(json.loads(path.read_text(encoding="utf-8")))
+    return {name: add_series(db, region, name, values, "meda")
+            for name, values in series.items() if values}
+
+
 # --- RAD -------------------------------------------------------------------------
 
 _DOSE_E = re.compile(r"^\[DOSIMETRY_TOTAL_DOSE_E:[^\]]*\]\s*\n\s*\n?\s*([-+0-9.eE]+)", re.M)

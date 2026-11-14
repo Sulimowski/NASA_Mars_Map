@@ -153,6 +153,27 @@ def window_path(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = R
     return Path(raw_dir) / source / f"{stem}{tag}__{grid.name}.tif"
 
 
+def source_crs(src):
+    """The raster's CRS, with one known provider mistake repaired.
+
+    HiRISE ortho JP2 files store the equirectangular standard parallel in the wrong
+    field: "latitude of origin = 15, standard parallel = 0" where the PDS label (and
+    the DTM made from the same images) says standard parallel 15, origin 0. Read
+    literally, the image lands 15 degrees of latitude away from where it is. It only
+    shows outside the equatorial band, where the standard parallel is not 0.
+    """
+    from rasterio.crs import CRS
+
+    crs = src.crs
+    if crs is None:
+        return None
+    p = crs.to_dict()
+    if p.get("proj") == "eqc" and float(p.get("lat_ts", 0) or 0) == 0 and float(p.get("lat_0", 0) or 0) != 0:
+        p["lat_ts"], p["lat_0"] = p["lat_0"], 0
+        return CRS.from_dict(p)
+    return crs
+
+
 def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = RAW_DIR,
                  margin_px: int = 4, band: int = 1) -> Path | None:
     """Save the part of a remote (or local) raster that covers `grid`, in its native grid.
@@ -180,7 +201,8 @@ def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = 
                        CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.tiff,.img,.IMG,.jp2,.JP2,.cub")
     try:
         with env, rasterio.open(("/vsicurl/" + url) if remote else url) as src:
-            bounds = transform_bounds(CRS.from_proj4(grid.proj4), src.crs, *region, densify_pts=21)
+            crs = source_crs(src)
+            bounds = transform_bounds(CRS.from_proj4(grid.proj4), crs, *region, densify_pts=21)
             win = from_bounds(*bounds, transform=src.transform)
             c0 = max(0, int(win.col_off) - margin_px)
             r0 = max(0, int(win.row_off) - margin_px)
@@ -191,7 +213,7 @@ def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = 
             win = Window(c0, r0, c1 - c0, r1 - r0)
             data = src.read(band, window=win)
             profile = dict(driver="GTiff", height=data.shape[0], width=data.shape[1], count=1,
-                           dtype=data.dtype, crs=src.crs, nodata=src.nodata,
+                           dtype=data.dtype, crs=crs, nodata=src.nodata,
                            transform=window_transform(win, src.transform), compress="deflate")
             tags = {"cropped_from": url, "region": grid.name}
     except rasterio.errors.RasterioIOError as e:
