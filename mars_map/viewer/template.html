@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mars Survival Map</title>
+<link rel="icon" href="data:,">
 <style>
 /* A working tool, not a poster: system fonts, panels docked to the window edges, native
    form controls, one selection colour. Nothing is loaded from the network. */
@@ -172,6 +173,8 @@ svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
     <div class="ctl"><label for="dvh">Local time</label><input id="dvh" type="range" min="0" max="23.95" step="0.05"><output id="dvhv"></output></div>
     <div class="ctl"><label></label><button id="dvp" type="button">Pause</button><span></span></div>
     <div id="devils"></div>
+    <div class="ctl"><label></label><button id="dvt" type="button" title="Sends one vortex across the route ahead of the astronaut">Send one across the route</button><span></span></div>
+    <p class="note" id="dvlog" style="margin:6px 12px 0"></p>
   </section>
   <section id="condBox" style="display:none"><h2>Conditions by sol</h2><div id="cond"></div></section>
 </aside>
@@ -440,6 +443,9 @@ const ring = new THREE.Mesh(new THREE.RingGeometry(13, 16.5, 40), new THREE.Mesh
 ring.rotation.x = -Math.PI / 2; ring.visible = false; ring.renderOrder = 5; scene.add(ring);
 
 let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0, devilPoints = null, sandPoints = null;
+// the astronaut's walk along the route; see "walking the route" further down
+const walk = {plan: null, u: 0, base: 1, detour: null, names: null, hold: false, pending: false,
+              cool: 0, last: 0, zone: null, zoneUntil: 0, reroutes: 0};
 // EVA plans: the planner's three strategies, or the single route of the older format.
 let PLANS = D.plans ? D.plans.items : (D.route ? [Object.assign({id: 'route', title: 'EVA route'}, D.route)] : []);
 let PLAN = PLANS.find(p => p.id === 'science') || PLANS[0] || null;
@@ -456,7 +462,7 @@ function layout() {                                // everything that sits on th
   pins.forEach(p => p.g.position.copy(world(p.s.x, p.s.y)));
   for (const m of [trackMesh, routeMesh]) if (m) { overlay.remove(m); m.geometry.dispose(); }
   [trackMesh] = tube(D.track, 1.7, PAPER, 2.2);
-  [routeMesh, routeCurve] = tube(PLAN && PLAN.points, 3.4, ROUTE, 3.6);
+  [routeMesh, routeCurve] = tube(routePoints(), 3.4, ROUTE, 3.6);
   applyToggles();
 }
 
@@ -585,7 +591,7 @@ async function setLayer(id) {
 const toggles = {contours: ['Contours 10 m', true], hatch: ['Blocked ground', false], labels: ['Labels', true]};
 if (D.track.length) toggles.track = ['Rover track', true];
 if (PLANS.length) toggles.route = ['EVA route', true];
-if (D.devils) toggles.devils = ['Dust devils', true];
+if (D.devils) { toggles.devils = ['Dust devils', true]; toggles.avoid = ['Avoid dust devils', true]; }
 if (SAND) toggles.sand = ['Sand and blowing sand', true];
 toggles.shadows = ['Shadows', true];
 function applyToggles() {
@@ -837,7 +843,7 @@ function drawDevilPanel() {
     <p class="note">Vortices with a pressure drop of 0.8 Pa or more passing over one point. ${DV.source}. The vortices on the map follow this rate for the chosen season and hour; their places and paths are random and they are drawn wider than real.</p>`;
 }
 drawDevilPanel();
-window.__devils = {state: dv, list: devils, spawn: () => spawnDevil()};    // for debugging, like window.__viewer
+window.__devils = {state: dv, list: devils, spawn: () => spawnDevil(), across: () => devilAcrossRoute()};    // for debugging, like window.__viewer
 { // view3d.html#devils=3 starts with that many vortices already turning (for screenshots and demos)
   const m = location.hash.match(/devils=(\d+)/);
   if (m && DV) for (let i = 0; i < Math.min(+m[1], DV_MAX); i++) { spawnDevil(); devils[devils.length - 1].age = 2 + Math.random() * 2; }
@@ -1012,6 +1018,124 @@ function resize() {
 }
 new ResizeObserver(resize).observe(canvas); resize();
 const v = new THREE.Vector3(); t0 = performance.now();
+// ---------- walking the route, and stepping around dust devils ----------
+// The astronaut walks the chosen route at a steady pace. Every frame the vortices on the map
+// are checked: one whose track over the rest of its life crosses the route just ahead is a
+// threat. The astronaut stops, the planner (scripts/serve.py, /api/reroute) is asked for a way
+// from here to the stops still to visit and back to the base that keeps out of the vortex's
+// corridor, and the walk goes on along it. With no way around, or with no planner to ask,
+// the astronaut waits until the vortex has passed.
+const DV_KEEP = 60,           // m: closer than this to the vortex's track is a threat
+      DV_MARGIN = 15,         // m: the new route stays this much further out
+      DV_AHEAD = 350,         // m of route ahead that is watched
+      DV_NEAR = 450;          // m: a vortex further than this from the astronaut is ignored
+function routePoints() { return walk.detour && walk.plan === PLAN ? walk.detour : (PLAN && PLAN.points); }
+function pathLen(pts) { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return L; }
+function segDist(px, py, z) {                      // distance from a point to the vortex's track
+  const dx = z.x2 - z.x1, dy = z.y2 - z.y1, q = dx * dx + dy * dy;
+  const t = q ? Math.max(0, Math.min(1, ((px - z.x1) * dx + (py - z.y1) * dy) / q)) : 0;
+  return Math.hypot(px - z.x1 - t * dx, py - z.y1 - t * dy);
+}
+const walkerXY = () => [walker.position.x + W / 2, walker.position.z + H / 2];
+function stopsAhead(pts, u, names) {               // the stops of this route not reached yet, in route order
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const out = [];
+  for (const n of names) {
+    const s = stops.find(k => k.name === n); if (!s) continue;
+    let bi = -1, bd = 60;                          // a stop further than this from the route is not on it
+    pts.forEach((q, i) => { const d = Math.hypot(q[0] - s.x, q[1] - s.y); if (d < bd) { bd = d; bi = i; } });
+    if (bi >= 0 && cum[bi] / cum[cum.length - 1] > u + .004) out.push({name: n, x: s.x, y: s.y, at: cum[bi]});
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+function say(msg, bad) { const e = $('dvlog'); e.textContent = msg; e.className = bad ? 'warn' : 'note'; }
+function clearZone() { if (walk.zone) { overlay.remove(walk.zone); walk.zone.geometry.dispose(); walk.zone = null; } }
+function showZone(z, now, life) {                  // outline of the corridor the route must keep out of
+  clearZone();
+  const r = z.r, a = Math.atan2(z.y2 - z.y1, z.x2 - z.x1), pts = [];
+  for (const [cx, cy, a0] of [[z.x2, z.y2, a - Math.PI / 2], [z.x1, z.y1, a + Math.PI / 2]])
+    for (let k = 0; k <= 10; k++) { const t = a0 + Math.PI * k / 10; pts.push([Math.max(3, Math.min(W - 3, cx + r * Math.cos(t))), Math.max(3, Math.min(H - 3, cy + r * Math.sin(t)))]); }
+  pts.push(pts[0]);
+  [walk.zone] = tube(pts, 1.8, 0xe0664a, 4); walk.zoneUntil = now + life * 1000;
+}
+function threat() {                                // the vortex that will cross the route ahead, if any
+  const pts = routePoints(); if (!pts || !routeCurve) return null;
+  const [wx, wy] = walkerXY(), L = Math.max(pathLen(pts), 1);
+  for (const d of devils) {
+    const rem = d.life - d.age; if (rem < 1) continue;
+    const z = {x1: d.x, y1: d.y, x2: d.x + d.vx * rem, y2: d.y + d.vy * rem, r: DV_KEEP + DV_MARGIN, rem};
+    const here = segDist(wx, wy, z);
+    if (here > DV_NEAR) continue;
+    if (here < DV_KEEP) return Object.assign(z, {onMe: true});
+    for (let k = 1; k <= 14; k++) {
+      const uu = walk.u + k / 14 * DV_AHEAD / L; if (uu > 1) break;
+      const q = routeCurve.getPointAt(uu);
+      if (segDist(q.x + W / 2, q.z + H / 2, z) < DV_KEEP) return z;
+    }
+  }
+  return null;
+}
+async function avoidDevil(z, now) {
+  walk.hold = true;
+  if (z.onMe) return say('A dust devil is passing over the astronaut. Holding position until it has passed.', true);
+  showZone(z, now, z.rem);
+  if (!live) return say('A dust devil is about to cross the route. Holding position until it has passed. (Rerouting needs the app server, scripts\\serve.py.)', true);
+  walk.pending = true;
+  say('A dust devil is about to cross the route. Holding position and asking the planner for a way around…', true);
+  const pts = routePoints(), [wx, wy] = walkerXY(), plan = PLAN;
+  const via = stopsAhead(pts, walk.u, walk.detour ? walk.names : PLAN.targets);
+  const left = (1 - walk.u) * pathLen(pts);
+  try {
+    const r = await fetch('/api/reroute', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({site: D.name, sol: D.plans ? D.plans.sol : null, strategy: PLAN.id === 'route' ? 'science' : PLAN.id,
+        from: [wx, wy], via: via.map(({name, x, y}) => ({name, x, y})), base: [stops[0].x, stops[0].y],
+        avoid: [{x1: z.x1, y1: z.y1, x2: z.x2, y2: z.y2, r: z.r}]})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('server answered ' + r.status));
+    if (plan !== PLAN) throw new Error('the plan was changed meanwhile');
+    walk.detour = j.points; walk.names = via.map(v => v.name).filter(n => !j.dropped.includes(n));
+    walk.u = 0; walk.hold = false; walk.reroutes++; layout();
+    const extra = Math.round(j.distance_m - left);
+    say(`Rerouted around a dust devil in ${j.seconds} s: ${fmt(j.distance_m / 1000, 2)} km left, ${extra >= 0 ? '+' : '−'}${Math.abs(extra)} m against the plan.` +
+        (j.dropped.length ? ` Cut off and left out: ${j.dropped.join(', ')}.` : ''));
+  } catch (e) { say(`No way around the dust devil (${e.message}). Holding position until it has passed.`, true); }
+  walk.pending = false; walk.cool = performance.now() + 2500;
+}
+function devilAcrossRoute() {                      // a vortex aimed across the route ahead of the astronaut
+  if (!DV || !routeCurve) return;
+  const L = Math.max(pathLen(routePoints()), 1), uu = Math.min(.98, walk.u + 220 / L);
+  const q = routeCurve.getPointAt(uu), t = routeCurve.getTangentAt(uu);
+  const cx = q.x + W / 2, cy = q.z + H / 2, n = Math.hypot(t.x, t.z) || 1, nx = -t.z / n, ny = t.x / n, sp = 26, life = 11;
+  devils.push({x: cx - nx * sp * life * .45, y: cy - ny * sp * life * .45, vx: nx * sp, vy: ny * sp,
+    age: 0, life, hgt: 420, r0: 26, spin: 3, phase: Math.random() * 100});
+}
+if (DV) $('dvt').onclick = devilAcrossRoute;
+function stepWalk(now) {
+  const dt = walk.last ? Math.min(now - walk.last, 100) : 0; walk.last = now;
+  if (!routeCurve || !walker.visible) return;
+  if (walk.plan !== PLAN) {                        // another plan was chosen or planned: start it from the base
+    Object.assign(walk, {plan: PLAN, u: 0, detour: null, names: null, hold: false});
+    walk.base = routeCurve.getLength(); clearZone();
+  }
+  if (walk.zone && now > walk.zoneUntil) clearZone();
+  const watching = DV && devilPoints.visible && toggles.avoid && toggles.avoid[1];
+  if (!watching) { if (walk.hold && !walk.pending) walk.hold = false; }
+  else if (!walk.pending) {
+    const z = threat();
+    if (walk.hold) { if (!z) { walk.hold = false; say('The dust devil has passed. Walking on.'); } }
+    else if (z && now > walk.cool) avoidDevil(z, now);
+  }
+  if (!walk.hold) {
+    walk.u += dt / (42000 * routeCurve.getLength() / walk.base);       // the same pace on any route
+    if (walk.u >= 1) {                             // back at the base: the next walk follows the plan again
+      walk.u = 0;
+      if (walk.detour) { walk.detour = null; walk.names = null; layout(); walk.base = routeCurve.getLength(); }
+    }
+  }
+  walker.position.copy(routeCurve.getPointAt(Math.min(walk.u, 1))).y += 7;
+}
+window.__walk = walk;
+
 function frame(now) {
   placeCamera();
   updateDevils(now);
@@ -1023,10 +1147,7 @@ function frame(now) {
     pixelRatio = Math.max(1, pixelRatio - .25); renderer.setPixelRatio(pixelRatio); resize(); frame.n = 0; frame.avg = 16;
   }
   if (mouse.fresh && !drag) { mouse.fresh = false; readout(); }
-  if (routeCurve && walker.visible) {
-    const u = (((now - t0) / 42000) % 1 + 1) % 1;          // the first frame can be stamped before t0
-    walker.position.copy(routeCurve.getPointAt(u)).y += 7;
-  }
+  stepWalk(now);
   const scale = Math.max(.55, Math.min(2.6, cam.r / 1900));
   pins.forEach((p, i) => {
     p.g.scale.setScalar(scale); p.head.rotation.y = now * .0006 + i;
