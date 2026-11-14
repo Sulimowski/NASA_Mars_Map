@@ -68,23 +68,86 @@ Longitudes are east-positive in -180..180, latitudes planetocentric.
 
 Works in `mars_map/catalog/` and `mars_map/ingest/`. Branch: `data/ingest`.
 
-- [ ] **A1. Catalog module.** `mars_map/catalog/db.py`: create the SQLite file from `schema.sql`,
-      functions `add_source`, `add_products`, `find_products(bbox, kind)`, `add_layer`.
-      *Done when:* a test inserts 3 fake products and finds them by bounding box.
-- [ ] **A2. Catalog loader.** Fill `products` with metadata for HiRISE, CTX and DTM products from
-      PDS ODE REST and/or USGS STAC. **First verify** that these APIs return footprints and
-      download URLs; write down the working query in this README.
-      *Done when:* `find_products(gale_bbox, "dtm")` returns real products with URLs.
-- [ ] **A3. Fetcher with cache.** `ingest/fetch.py`: download a product into `data/raw/`, skip if
-      already there, resume or fail cleanly on a broken download.
-      *Done when:* the second call for the same product does not hit the network.
-- [ ] **A4. Normalizer.** `ingest/normalize.py`: reproject to the region grid, crop to the region,
-      convert units, set nodata, write `data/processed/<region>/<layer>.tif`, register in `layers`.
-      *Done when:* a Gale DTM becomes `elevation.tif` on the region grid with heights in metres.
-- [ ] **A5. Global coarse layers.** MOLA elevation, THEMIS day/night IR, TES thermal inertia and
-      mineral maps, cropped per region through A4 (they are the fallback where high-res is missing).
-- [ ] **A6. Time series.** `ingest/series.py`: Curiosity RAD dose and REMS weather per sol into
-      the `series` table.
+Check part A without internet (fake products, a local web server, a generated DTM):
+
+```bash
+.venv\Scripts\python scripts\check_ingest.py
+```
+
+Run part A on real data for Gale (catalog → fetch → normalize → global layers → series).
+About 100 MB of traffic (mostly RAD, 18 MB per sol), 1–2 minutes. Everything is cached, a
+second run downloads nothing:
+
+```bash
+.venv\Scripts\python scripts\ingest_gale.py
+```
+
+It writes `data/catalog.sqlite`, `data/raw/<source>/` and `data/processed/gale_mount_sharp/`.
+
+- [x] **A1. Catalog module.** [`mars_map/catalog/db.py`](mars_map/catalog/db.py): `connect()`
+      creates the SQLite file from `schema.sql`; `add_source`, `add_products`,
+      `find_products(bbox, kind)`, `add_layer`, plus `add_region`, `add_series`, `set_local_path`.
+      `find_products` returns products finest first, each with `coverage` = share of the bbox
+      inside its exact footprint. Re-adding a product keeps its `local_path`.
+- [x] **A2. Catalog loader.** [`mars_map/ingest/loaders.py`](mars_map/ingest/loaders.py):
+      `load_catalog(db, bbox)`. Both APIs were verified to return footprints and download URLs
+      (working queries below). `find_products(gale_bbox, "dtm")` returns real HiRISE and CTX DTMs.
+- [x] **A3. Fetcher with cache.** [`mars_map/ingest/fetch.py`](mars_map/ingest/fetch.py):
+      `fetch_product()` downloads a whole product into `data/raw/<source>/` through a `.part`
+      file, resumes a broken download with an HTTP Range request, raises `FetchError` otherwise.
+      `fetch_window()` reads only the pixels over a region from a remote raster and caches the
+      crop, which is how the global mosaics (2–23 GB) and 500 MB DTM strips are used.
+- [x] **A4. Normalizer.** [`mars_map/ingest/normalize.py`](mars_map/ingest/normalize.py):
+      `normalize()` reprojects to the region grid, sets nodata to NaN, converts units, mosaics
+      several products of one source (removing the constant height offset between DTMs),
+      writes `data/processed/<region>/<layer>__<source>.tif` and registers it in `layers`.
+- [ ] **A5. Global coarse layers.** [`mars_map/ingest/global_layers.py`](mars_map/ingest/global_layers.py).
+      Done: MOLA 463 m and HRSC+MOLA 200 m elevation, THEMIS day/night IR 100 m (8-bit
+      brightness, not kelvin), TES albedo. **Missing:** TES thermal inertia and the TES mineral
+      maps, no working direct URL found yet.
+- [x] **A6. Time series.** [`mars_map/ingest/series.py`](mars_map/ingest/series.py):
+      REMS weather for every mission sol (`temp_min_c`, `temp_max_c`, `ground_temp_min_c`,
+      `ground_temp_max_c`, `pressure_pa`) and RAD dose per sol (`radiation_dose_ugy_per_sol`
+      measured, `radiation_msv_per_sol` = measured × quality factor 3.05). RAD is 18 MB per
+      sol, so sols are loaded on request: `ingest_gale.py --rad-sols 453-482`.
+      The REMS feed has no dust opacity and no wind (`dust_opacity_tau`, `wind_max_ms`).
+
+### Working queries (verified 2026-11)
+
+PDS ODE REST, HiRISE DTMs over a box. Longitudes are east 0..360. `results=fmp` adds the file
+list (`Product_files`, the `.IMG` with `Type = Product` is the DTM) and the footprint
+(`Footprint_C0_geometry`, WKT):
+
+```
+https://oderest.rsl.wustl.edu/live2/?query=products&target=mars&results=fmp&output=JSON&ihid=MRO&iid=HIRISE&pt=DTM&westlon=137.346&eastlon=137.414&minlat=-4.767&maxlat=-4.733&limit=100
+```
+
+USGS STAC, items of a collection over a box. Longitudes are -180..180, `geometry` is the
+footprint, `assets.<key>.href` is a cloud-optimized GeoTIFF, pages are chained by the `next` link:
+
+```
+https://stac.astrogeology.usgs.gov/api/collections/mro_ctx_controlled_usgs_dtms/items?bbox=137.346,-4.767,137.414,-4.733&limit=100
+```
+
+| Source | Provider | Query | File used |
+|---|---|---|---|
+| `hirise_dtm` | ODE | `ihid=MRO&iid=HIRISE&pt=DTM` | `DTEEC_*.IMG`, 1 m |
+| `ctx_dtm` | STAC | `mro_ctx_controlled_usgs_dtms` | asset `geoid_adjusted_dem`, 20 m |
+| `ctx_optical` | STAC | same collection | asset `orthoimage` |
+| `hirise_optical` | STAC | `mro_hirise_uncontrolled_observations` | asset `image`, 0.25 m |
+| `themis` | STAC | `mo_themis_controlled_mosaics` | asset `image`, 100 m |
+
+Things to know:
+- Gale has thousands of CTX stereo-pair DTMs, so the STAC loader stops at `max_items` (200).
+- STAC also lists HiRISE DTMs (`mro_hirise_socet_dtms`), but some of its links are dead (404).
+  We take HiRISE DTMs from ODE.
+- Three HiRISE DTMs cover the Gale region completely; the pipeline uses one. Where one is not
+  enough, the normalizer mosaics several.
+- All elevations (HiRISE, CTX geoid-adjusted, MOLA) are metres above the MOLA areoid, but the
+  sources still disagree by a constant: over Gale, median difference to HiRISE is -5 m for CTX,
+  -11 m for HRSC+MOLA, -51 m for MOLA. Fusion has to remove it at the seams.
+- Open for meeting point 2: `fuse_region` refuses series that cover different sols, and real
+  series do (REMS has ~4700 sols, RAD only the sols that were requested).
 
 Priority for the first target: A1 → A2 → A3 → A4 (elevation), then A6 (radiation), then A5 (minerals).
 
