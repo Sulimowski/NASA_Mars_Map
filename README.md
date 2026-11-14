@@ -190,11 +190,38 @@ with `preview.png`), and prints how far the fused site is from the stub it was c
 
 Priority for the first target: B1 → B4 → B5, then B2 → B3, then B6.
 
+## A + B together: a real `Site` for Gale
+
+```bash
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python scripts\ingest_gale.py        # part A: real data -> catalog + processed layers
+.venv\Scripts\python scripts\build_gale_site.py    # part B: fusion -> data/gale_real/ + preview.png
+```
+
+`Site.load("data/gale_real")` then gives the same object as the stub, built from real data.
+
+What the real site has now (first joint run, 2026-11-14):
+
+- Elevation from one HiRISE DTM, 1 m native, 100 % of the region; slope and roughness from it.
+  Relief is 407 m over 2 km, median slope 9°, 4.9 % of cells blocked.
+- Extra layers carried through: `themis_night_ir`, `themis_day_ir` (8-bit DN, not kelvin), `albedo`.
+- Series from Curiosity: REMS weather and RAD dose, cut to the sols all of them share.
+
+Known gaps:
+
+- **No rock abundance, thermal inertia or minerals** in real data yet, so `terrain_class` only
+  tells bedrock from impassable (no sand, no boulders), `science_score` is 0 and `cost` comes
+  from slope and roughness alone.
+- **No targets and no base location.** The start point is picked automatically near the centre.
+- **Series are short.** The default RAD sols 453–457 fall into a gap of the REMS feed, only
+  sols 455–456 are common. Load more sols with `ingest_gale.py --rad-sols`.
+- The region centre (-4.75 N, 137.38 E) is an approximate guess, not a verified boxwork location.
+
 ## Meeting points
 
 1. **A2 done** → B switches the analyzer from the fake catalog to the real one.
-2. **A4 done for Gale** → B runs fusion on real elevation instead of synthetic.
-3. **B4 produces a real `Site`** → hand it to `Alg` and `GUI`; their code should work unchanged.
+2. [x] **A4 done for Gale** → B runs fusion on real elevation instead of synthetic.
+3. [x] **B4 produces a real `Site`** → hand it to `Alg` and `GUI`; their code should work unchanged.
 
 ## Git
 

@@ -135,6 +135,38 @@ def _fill(values: np.ndarray, default: float) -> np.ndarray:
     return values
 
 
+CORE_LAYERS = {"elevation", "rock_abundance", "thermal_inertia", "science_score"}
+
+
+def _common_series(db: sqlite3.Connection, region: str) -> dict[str, list[float]]:
+    """Per-sol series of a region, cut to the sols every series has.
+
+    Sources cover different sols (weather: the whole mission, radiation: the sols we
+    downloaded). `Site` needs equal-length series, so we keep the sols common to all.
+    A series sharing no sol with the others is dropped rather than emptying the rest.
+    """
+    by_name: dict[str, dict[int, float]] = {}
+    for name, sol, value in db.execute(
+            "SELECT s.name, s.sol, s.value FROM series s JOIN regions r ON r.id = s.region_id "
+            "WHERE r.name=?", (region,)):
+        by_name.setdefault(name, {})[sol] = value
+    if not by_name:
+        return {}
+    # start from the shortest series: it limits the common range
+    order = sorted(by_name, key=lambda n: len(by_name[n]))
+    common = set(by_name[order[0]])
+    kept = [order[0]]
+    for name in order[1:]:
+        both = common & set(by_name[name])
+        if both:
+            common, kept = both, kept + [name]
+    sols = sorted(common)
+    out: dict[str, list[float]] = {"sol": sols}
+    for name in sorted(kept):
+        out[name] = [by_name[name][s] for s in sols]
+    return out
+
+
 def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
                 targets: list[Target], no_go=(), mission: MissionParams | None = None) -> Site:
     """Build a `Site` for a region from whatever processed layers the catalog has."""
@@ -162,18 +194,12 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
         sci = layer("science_score", 0.0)
         slope = slope_deg(elev, grid.resolution_m)
 
-        series: dict[str, list[float]] = {}
-        sols: dict[str, list[int]] = {}
-        for name, sol, value in db.execute(
-                "SELECT s.name, s.sol, s.value FROM series s JOIN regions r ON r.id = s.region_id "
-                "WHERE r.name=? ORDER BY s.name, s.sol", (region,)):
-            series.setdefault(name, []).append(value)
-            sols.setdefault(name, []).append(sol)
-        if series:
-            if len({tuple(v) for v in sols.values()}) != 1:
-                raise ValueError(f"series of {region!r} cover different sols: "
-                                 f"{ {k: len(v) for k, v in sols.items()} }")
-            series["sol"] = next(iter(sols.values()))
+        # Optional layers the catalog has but the contract does not require
+        # (albedo, THEMIS brightness, minerals...): carried through unchanged.
+        extras = {name: _fill(merge_sources(fs, grid.shape)[0], 0.0)
+                  for name, fs in files.items() if name not in CORE_LAYERS}
+
+        series = _common_series(db, region)
         used = sorted({f.source for fs in files.values() for f in fs})
     finally:
         db.close()
@@ -194,6 +220,7 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
             "science_score": np.clip(sci, 0, 1),
             "nodata": nodata,
             "source_res": np.where(np.isnan(elev_res), np.float32(np.inf), elev_res),
+            **extras,
         },
         series=series,
         start=tuple(start),
