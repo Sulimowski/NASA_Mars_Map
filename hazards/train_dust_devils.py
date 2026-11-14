@@ -9,7 +9,8 @@ Tests, all on stations the model did not see while training:
 Writes into hazards/data/:
   dust_devil_scores.csv          every test, model against the baselines
   dust_devil_tests.png           observed against predicted, by hour and by season
-  gale_boxwork_dust_devils.csv   the product: expected vortices per hour for every season and hour
+  <region>_dust_devils.csv       the product, one per map region: expected vortices per hour for
+                                 every season and hour
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from .dataset import (DAY_HOURS, FEATURES, MIN_DROP_PA, build_table, climate_by_
 from .marstime import MARS_HOUR_IN_EARTH_HOURS                                               # noqa: E402
 from .model import DiurnalTable, DustDevilModel, PhysicsIndex, score                         # noqa: E402
 from .rems import STORE, pick_sols                                                           # noqa: E402
-from .sites import SITES                                                                     # noqa: E402
+from .sites import REGIONS, SITES                                                            # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "data"
 MODELS = {"network": DustDevilModel, "diurnal table": DiurnalTable, "physics index": PhysicsIndex}
@@ -135,24 +136,29 @@ def main() -> None:
     print(scores.round(3).to_string(index=False))
     plot_tests(tests, OUT / "dust_devil_tests.png")
 
-    # The product. The network trained on InSight and Perseverance gives the shape over hours and
-    # seasons; Curiosity's own count at Gale sets the level, because no model here sees that the
-    # crater suppresses convection (all of them predicted about three times too many).
+    # The products, one per map region. The network trained on InSight and Perseverance gives the
+    # shape over hours and seasons; the count of the station nearby sets the level, because no
+    # model here sees local effects such as Gale crater suppressing convection (all of them
+    # predicted about three times too many there).
     final = DustDevilModel().fit(table)
-    region = climate_by_hour("curiosity_boxwork")
-    raw = np.where(region["hour"].isin(DAY_HOURS), final.predict(region), 0.0)
-    calibration = 1.0
-    if gale is not None and gale["count"].sum() > 0:
-        calibration = gale["count"].sum() / (final.predict(gale) * gale["exposure_h"]).sum()
-    region["vortices_per_h_uncalibrated"] = raw
-    region["vortices_per_h"] = raw * calibration
-    region["site"] = "gale_boxwork"
-    print(f"\nGale calibration factor (observed / predicted): {calibration:.2f}")
-    keep = ["site", "ls_from", "hour", "vortices_per_h", "vortices_per_h_uncalibrated", *FEATURES]
-    region[keep].round(4).to_csv(OUT / "gale_boxwork_dust_devils.csv", index=False)
-    peak = region.loc[region["vortices_per_h"].idxmax()]
-    print(f"\ngale_boxwork: peak {peak.vortices_per_h:.3f} vortices/h at Ls {peak.ls_from:.0f}-{peak.ls_from + 30:.0f}, "
-          f"hour {int(peak.hour)}; per sol {by_season(region.assign(count=0, exposure_h=1), region.vortices_per_h).round(2).to_dict()}")
+    stations = {"perseverance": jezero, "curiosity": gale}
+    factors = {}
+    for name, st in stations.items():
+        if st is not None and st["count"].sum() > 0:
+            factors[name] = st["count"].sum() / (final.predict(st) * st["exposure_h"]).sum()
+            print(f"\ncalibration by {name} (observed / predicted): {factors[name]:.2f}")
+    for name, reg in REGIONS.items():
+        region = climate_by_hour(f"region_{name}")
+        raw = np.where(region["hour"].isin(DAY_HOURS), final.predict(region), 0.0)
+        k = factors.get(reg["calibrate"], 1.0)
+        region["vortices_per_h_uncalibrated"] = raw
+        region["vortices_per_h"] = raw * k
+        region["site"] = name
+        keep = ["site", "ls_from", "hour", "vortices_per_h", "vortices_per_h_uncalibrated", *FEATURES]
+        region[keep].round(4).to_csv(OUT / f"{name}_dust_devils.csv", index=False)
+        per_sol = by_season(region.assign(count=0, exposure_h=1), region.vortices_per_h)
+        print(f"{name}: calibrated by {reg['calibrate'] if reg['calibrate'] in factors else 'nothing'} (x{k:.2f}); "
+              f"vortices per sol {per_sol.min():.2f}..{per_sol.max():.2f}")
     print(OUT / "dust_devil_tests.png")
 
 

@@ -105,6 +105,12 @@ input[type=range]{width:100%;margin:0;accent-color:var(--link)}
 .plans tr.row.on{background:var(--sel);color:#fff}
 .plans td i{display:inline-block;width:8px;height:8px;margin-right:7px;background:var(--ok)}
 .plans td i.bad{background:var(--bad)}
+.ctl select{width:100%;font:inherit;color:var(--text);background:var(--view);border:1px solid var(--line);padding:2px 4px}
+.ctl.wide{grid-template-columns:84px 1fr}
+.ctl button{font:inherit;color:var(--text);background:var(--hover);border:1px solid var(--line);padding:1px 0;cursor:pointer}
+.ctl button:hover{background:var(--sel)}
+svg.hours{display:block;width:100%;height:64px;margin-top:8px;overflow:visible}
+.hours text{font:11px var(--ui);fill:var(--dim)}
 .status{display:flex;align-items:center;gap:7px;margin-top:0;margin-bottom:6px;font-weight:600}
 .status i{width:9px;height:9px;background:var(--ok)} .status.bad i{background:var(--bad)}
 .warn{margin:6px 0 0;color:var(--warn)}
@@ -160,6 +166,12 @@ svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
   <section><h2>Stops</h2><div id="stops"></div><div id="detail"></div></section>
   <section><h2>Plan your own walk</h2><div id="edit"></div></section>
   <section id="planBox" style="display:none"><h2>EVA plan</h2><div id="plan"></div></section>
+  <section id="devilBox" style="display:none"><h2>Dust devils</h2>
+    <div class="ctl wide"><label for="dvs">Season</label><select id="dvs"></select></div>
+    <div class="ctl"><label for="dvh">Local time</label><input id="dvh" type="range" min="0" max="23.95" step="0.05"><output id="dvhv"></output></div>
+    <div class="ctl"><label></label><button id="dvp" type="button">Pause</button><span></span></div>
+    <div id="devils"></div>
+  </section>
   <section id="condBox" style="display:none"><h2>Conditions by sol</h2><div id="cond"></div></section>
 </aside>
 
@@ -328,7 +340,7 @@ buildPins();
 const ring = new THREE.Mesh(new THREE.RingGeometry(13, 16.5, 40), new THREE.MeshBasicMaterial({color: PAPER, side: THREE.DoubleSide, transparent: true, opacity: .9, depthTest: false}));
 ring.rotation.x = -Math.PI / 2; ring.visible = false; ring.renderOrder = 5; scene.add(ring);
 
-let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0;
+let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0, devilPoints = null;
 // EVA plans: the planner's three strategies, or the single route of the older format.
 let PLANS = D.plans ? D.plans.items : (D.route ? [Object.assign({id: 'route', title: 'EVA route'}, D.route)] : []);
 let PLAN = PLANS.find(p => p.id === 'science') || PLANS[0] || null;
@@ -466,12 +478,14 @@ async function setLayer(id) {
 const toggles = {contours: ['Contours 10 m', true], hatch: ['Blocked ground', false], labels: ['Labels', true]};
 if (D.track.length) toggles.track = ['Rover track', true];
 if (PLANS.length) toggles.route = ['EVA route', true];
+if (D.devils) toggles.devils = ['Dust devils', true];
 function applyToggles() {
   uniforms.uContour.value = toggles.contours[1] ? 1 : 0; uniforms.uHatch.value = toggles.hatch[1] ? 1 : 0;
   $('labels').style.display = toggles.labels[1] ? '' : 'none';
   if (trackMesh) trackMesh.visible = !!(toggles.track && toggles.track[1]);
   if (routeMesh) routeMesh.visible = !!(toggles.route && toggles.route[1]);
   walker.visible = !!(routeMesh && routeMesh.visible);
+  if (devilPoints) devilPoints.visible = !!(toggles.devils && toggles.devils[1]);
 }
 $('toggles').innerHTML = Object.entries(toggles).map(([k, [t, on]]) => `<label><input type="checkbox" data-k="${k}"${on ? ' checked' : ''}>${t}</label>`).join('');
 document.querySelectorAll('#toggles input').forEach(b => b.onchange = () => { toggles[b.dataset.k][1] = b.checked; applyToggles(); });
@@ -618,6 +632,156 @@ fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject()).then(j => { l
   .catch(() => { live = false; }).finally(drawEdit);
 
 showPlan();
+
+// ---------- dust devils: the hazards model's forecast, and vortices drawn to follow it ----------
+// The numbers in the panel are the forecast for one point (where an astronaut stands). The
+// vortices on the map are an illustration of it: how many appear follows the forecast for the
+// season and hour, where they appear and where they drift is random, and they are drawn about
+// three times wider than real so they can be seen at this scale.
+const DV = D.devils;
+const DV_NP = 3200, DV_SHADOW = 36, DV_MAX = 14, SOL_H = 1.0275;     // particles per vortex, vortices at once, Earth h per Mars h
+const dv = {season: 0, hour: 11.5, play: true, last: 0, shown: ''};
+const devils = [];
+let devilGeo = null;
+if (DV) {
+  const peak = Math.max(...DV.rate.flat(), 1e-6);
+  const near = DV.lsNow == null ? 120 : DV.lsNow;
+  dv.season = Math.max(0, DV.seasons.findIndex(s => near >= s && near < s + 30));
+  dv.wind = Math.random() * Math.PI * 2;
+  $('devilBox').style.display = '';
+  $('dvs').innerHTML = DV.seasons.map((s, i) => `<option value="${i}">Ls ${s}–${s + 30}${s >= 180 && s < 330 ? ', dusty season' : ''}${DV.lsNow != null && i === dv.season ? ' (now)' : ''}</option>`).join('');
+  $('dvs').value = dv.season;
+  $('dvs').onchange = () => { dv.season = +$('dvs').value; dv.wind = Math.random() * Math.PI * 2; dv.shown = ''; drawDevilPanel(); };
+  $('dvh').oninput = () => { dv.hour = +$('dvh').value; dv.play = false; $('dvp').textContent = 'Play'; drawDevilPanel(); };
+  $('dvp').onclick = () => { dv.play = !dv.play; $('dvp').textContent = dv.play ? 'Pause' : 'Play'; };
+
+  // One shared particle pattern; each vortex turns and lifts it with its own phase.
+  // Kinds: 0 = spiral arm (the streaks that show the turning), 1 = diffuse core, 2 = skirt of dust at the foot.
+  const A0 = new Float32Array(DV_NP), F0 = new Float32Array(DV_NP), J = new Float32Array(DV_NP), K = new Uint8Array(DV_NP);
+  for (let i = 0; i < DV_NP; i++) {
+    J[i] = Math.random(); F0[i] = Math.random();
+    K[i] = i < DV_NP * .35 ? 0 : i < DV_NP * .82 ? 1 : 2;
+    A0[i] = K[i] === 0 ? (i % 3) * 2.094 + (Math.random() - .5) * 1.2 : Math.random() * Math.PI * 2;
+  }
+  dv.pattern = {A0, F0, J, K};
+  const N = DV_MAX * (DV_NP + DV_SHADOW);
+  devilGeo = new THREE.BufferGeometry();
+  devilGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+  devilGeo.setAttribute('alpha', new THREE.BufferAttribute(new Float32Array(N), 1));
+  devilGeo.setAttribute('psize', new THREE.BufferAttribute(new Float32Array(N), 1));
+  devilGeo.setAttribute('tint', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+  devilGeo.setDrawRange(0, 0);
+  // Soft round particles with their own colour, size (metres) and transparency.
+  devilPoints = new THREE.Points(devilGeo, new THREE.ShaderMaterial({
+    uniforms: {uScale: {value: 600}},
+    vertexShader: `attribute float alpha, psize; attribute vec3 tint; varying float vA; varying vec3 vC; uniform float uScale;
+      void main() { vA = alpha; vC = tint; vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = clamp(psize * uScale / -mv.z, 3.0, 30.0); gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `varying float vA; varying vec3 vC;
+      void main() { vec2 p = gl_PointCoord - 0.5; float d2 = dot(p, p); if (d2 > 0.25) discard;
+        gl_FragColor = vec4(vC, min(1.0, vA * exp(-d2 * 10.0))); }`,
+    transparent: true, depthWrite: false}));
+  devilPoints.frustumCulled = false; devilPoints.renderOrder = 4; scene.add(devilPoints);
+  dv.scale = 1.1 / peak;                              // spawns per second of animation at the peak hour of the year
+}
+
+const clock = h => `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
+function devilRate(h) { return DV.rate[dv.season][Math.floor(h) % 24]; }
+function hourRanges(hours) {                          // [8, 9, 16, 17] -> "8–10 h and 16–18 h"
+  const out = []; let a = null, b = null;
+  for (const h of hours) { if (a !== null && h === b + 1) b = h; else { if (a !== null) out.push([a, b]); a = b = h; } }
+  if (a !== null) out.push([a, b]);
+  return out.map(([x, y]) => `${x}–${y + 1} h`).join(' and ');
+}
+function drawDevilPanel() {
+  if (!DV) return;
+  const key = `${dv.season}|${Math.floor(dv.hour * 4)}`;
+  if (key === dv.shown) return;                       // redraw at most every quarter hour of the clock
+  dv.shown = key;
+  $('dvh').value = dv.hour; $('dvhv').textContent = clock(dv.hour);
+  const r = DV.rate[dv.season], now = devilRate(dv.hour), sol = r.reduce((a, b) => a + b, 0) * SOL_H;
+  const top = Math.max(...r, 1e-6), peakAll = Math.max(...DV.rate.flat(), 1e-6);
+  const calm = r.map((v, h) => [v, h]).filter(([v, h]) => h >= 7 && h <= 18 && v < top * .3).map(([, h]) => h);
+  const busy = r.map((v, h) => [v, h]).filter(([v]) => v >= top * .7).map(([, h]) => h);
+  const bars = r.map((v, h) => {
+    const bh = v / peakAll * 40, on = h === Math.floor(dv.hour);
+    return `<rect x="${4 + h * 10.5}" y="${46 - bh}" width="8.5" height="${Math.max(bh, .5)}" fill="${on ? '#ffffff' : v >= top * .7 ? '#e0664a' : v >= top * .3 ? '#d9a13a' : '#4a5058'}"/>`;
+  }).join('');
+  const cell = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`;
+  $('devils').innerHTML = `<table>${cell('Expected now', now > 0 ? fmt(now, 2) + ' per hour' : 'none')}${cell('One every', now > 0 ? fmt(1 / now, 1) + ' h' : '—')}${cell('This sol', fmt(sol, 1) + ' vortices')}</table>
+    <svg class="hours" viewBox="0 0 260 64" preserveAspectRatio="none">${bars}
+      <text x="4" y="60">0 h</text><text x="130" y="60" text-anchor="middle">12 h</text><text x="256" y="60" text-anchor="end">24 h</text></svg>
+    <p class="note">Most likely ${busy.length ? hourRanges(busy) : '—'}. Quietest daylight: ${calm.length ? hourRanges(calm) : '—'}.</p>
+    <p class="note">Vortices with a pressure drop of 0.8 Pa or more passing over one point. ${DV.source}. The vortices on the map follow this rate for the chosen season and hour; their places and paths are random and they are drawn wider than real.</p>`;
+}
+drawDevilPanel();
+window.__devils = {state: dv, list: devils, spawn: () => spawnDevil()};    // for debugging, like window.__viewer
+
+function spawnDevil() {
+  const m = 120, s = 22 + Math.random() * 18, w = dv.wind + (Math.random() - .5) * .9;
+  devils.push({x: m + Math.random() * (W - 2 * m), y: m + Math.random() * (H - 2 * m), vx: Math.cos(w) * s, vy: Math.sin(w) * s,
+    age: 0, life: 8 + Math.random() * 6, hgt: 280 + Math.random() * 320, r0: 18 + Math.random() * 14,
+    spin: 2.2 + Math.random() * 1.6, phase: Math.random() * 100});
+}
+function updateDevils(now) {
+  if (!DV) return;
+  const dt = dv.last ? Math.min((now - dv.last) / 1000, .1) : 0; dv.last = now;
+  if (dv.play) { dv.hour = (dv.hour + dt * .4) % 24; drawDevilPanel(); }     // one sol in a minute
+  const on = devilPoints.visible;
+  if (on && devils.length < DV_MAX && Math.random() < devilRate(dv.hour) * dv.scale * dt) spawnDevil();
+  for (const d of devils) { d.age += dt; d.x += d.vx * dt; d.y += d.vy * dt; }
+  for (let i = devils.length - 1; i >= 0; i--) {
+    const d = devils[i];
+    if (d.age > d.life || d.x < 20 || d.y < 20 || d.x > W - 20 || d.y > H - 20) devils.splice(i, 1);
+  }
+  if (!on) return;
+  devilPoints.material.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(camera.fov * Math.PI / 360));
+  const A = devilGeo.attributes, pos = A.position.array, alp = A.alpha.array, siz = A.psize.array, col = A.tint.array;
+  const {A0, F0, J, K} = dv.pattern, sun = uniforms.uSun.value;
+  const sunLow = Math.max(sun.y, .15);
+  let n = 0;
+  const put = (x, y, z, a, s, r, g, b) => {
+    pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; alp[n] = a; siz[n] = s;
+    col[n * 3] = r; col[n * 3 + 1] = g; col[n * 3 + 2] = b; n++;
+  };
+  for (const d of devils) {
+    const base = world(d.x, d.y, 0), t = d.phase + d.age;
+    const env = Math.min(1, d.age / 1.5, (d.life - d.age) / 2);              // fade in and out
+    const sp = Math.hypot(d.vx, d.vy), ux = d.vx / sp, uz = d.vy / sp;        // drift direction
+    // Shadow: dark soft spots laid on the ground, cast away from the Sun, following the relief.
+    for (let k = 0; k < DV_SHADOW; k++) {
+      const q = k / (DV_SHADOW - 1), len = Math.min(d.hgt * .9 / sunLow * Math.hypot(sun.x, sun.z), 900) * q;
+      const sx = d.x - sun.x / Math.hypot(sun.x, sun.z) * len, sy = d.y - sun.z / Math.hypot(sun.x, sun.z) * len;
+      if (sx < 2 || sy < 2 || sx > W - 2 || sy > H - 2) continue;
+      const g = world(sx, sy, 2);
+      put(g.x, g.y, g.z, env * .14 * (1 - q * .6), d.r0 * (1.2 + 2.2 * q), .06, .03, .02);
+    }
+    for (let i = 0; i < DV_NP; i++) {
+      const kind = K[i];
+      // height fraction: arms and core rise and loop; the skirt stays low
+      const f = kind === 2 ? F0[i] * .09 : (F0[i] + t * (kind === 0 ? .26 : .18)) % 1;
+      // funnel: wide skirt, narrow neck just above the ground, opening towards the top
+      const neck = .32 + 2.2 * Math.pow(f, 1.7);
+      const r = kind === 2 ? d.r0 * (1.1 + 2.6 * J[i]) : d.r0 * neck * (kind === 0 ? .75 + .45 * J[i] : .3 + .75 * Math.sqrt(J[i]));
+      const a = A0[i] + t * d.spin * (kind === 2 ? .7 : 1.9 - 1.1 * f) + (kind === 0 ? f * 4.5 : f * 2.0);   // arms wind up the column
+      const h = f * d.hgt;
+      // the column sways and its top trails the drift
+      const wob = d.r0 * .9 * f;
+      const ox = Math.sin(f * 4.2 + t * 1.3) * wob - ux * .22 * h * sp / 30;
+      const oz = Math.cos(f * 3.6 + t * 1.1) * wob - uz * .22 * h * sp / 30;
+      // dense rust-brown at the foot, pale and thin at the top
+      const c = Math.min(1, f * 1.4);
+      const alpha = env * (kind === 2 ? .6 * (1 - J[i] * .5) : kind === 0 ? 1 : .75)
+        * Math.pow(1 - f, .9) * Math.min(1, (f + .02) / .06);
+      put(base.x + Math.cos(a) * r + ox, base.y + h + 1.5, base.z + Math.sin(a) * r + oz, alpha,
+        (kind === 2 ? 7 : kind === 0 ? 3.8 : 5.2) * (.8 + 1.0 * f),
+        .72 + .27 * c, .5 + .4 * c, .36 + .46 * c);
+    }
+  }
+  devilGeo.setDrawRange(0, n);
+  for (const k of ['position', 'alpha', 'psize', 'tint']) A[k].needsUpdate = true;
+}
+
 { const S = D.series, sol = S.sol || [];
   const spark = (title, lines, unit) => {
     const all = lines.flatMap(l => l.v), lo = Math.min(...all), hi = Math.max(...all), n = lines[0].v.length;
@@ -648,6 +812,7 @@ new ResizeObserver(resize).observe(canvas); resize();
 const v = new THREE.Vector3(); t0 = performance.now();
 function frame(now) {
   placeCamera();
+  updateDevils(now);
   if (mouse.fresh && !drag) { mouse.fresh = false; readout(); }
   if (routeCurve && walker.visible) {
     const u = (((now - t0) / 42000) % 1 + 1) % 1;          // the first frame can be stamped before t0

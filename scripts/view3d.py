@@ -247,6 +247,29 @@ def eva_plans(folder: Path, site: Site) -> dict | None:
     return plans
 
 
+def dust_devils(site: Site, folder: Path) -> dict | None:
+    """Dust devil forecast of the hazards model (`python -m hazards.train_dust_devils`).
+
+    Read from hazards/data/<site>_dust_devils.csv: expected encounters per Earth hour at one
+    point, per season bin (30 deg of Ls) and local solar hour. None when the file is not there.
+    """
+    path = ROOT / "hazards" / "data" / f"{site.name}_dust_devils.csv"
+    if not path.exists():
+        return None
+    import pandas as pd
+    df = pd.read_csv(path)
+    seasons = sorted(df["ls_from"].unique())
+    rate = [[float(df[(df.ls_from == s) & (df.hour == h)]["vortices_per_h"].sum()) for h in range(24)]
+            for s in seasons]
+    ls_now = None
+    plan_doc = folder / "eva_plans.json"                  # its sol tells which season to show first
+    if plan_doc.exists():
+        ls_now = json.loads(plan_doc.read_text(encoding="utf-8")).get("conditions", {}).get("ls_deg")
+    print(f"  dust devils: {len(seasons)} seasons x 24 h from {path.name}")
+    return {"seasons": [float(s) for s in seasons], "rate": rate, "lsNow": ls_now,
+            "source": "hazards model, calibrated on Curiosity pressure at Gale"}
+
+
 def three_source() -> str | None:
     """The 3D library, cached in data/cache so the page works offline. None = load from the CDN."""
     path = DATA_DIR / "cache" / f"three-{THREE_VERSION}.module.min.js"
@@ -327,6 +350,7 @@ def build(folder: Path) -> Path:
         "mineralNames": mineral_names,
         "start": list(site.start), "targets": targets, "noGo": site.no_go,
         "track": rover_track(site), "route": route, "plans": plans, "series": site.series,
+        "devils": dust_devils(site, folder),
         "mission": {"maxSlope": m.max_slope_deg, "hardSlope": m.hard_max_slope_deg, "evaHours": m.eva_max_hours,
                     "maxDose": m.max_dose_msv, "maxKm": m.max_distance_km, "speed": m.walk_speed_flat_kmh},
         "stats": {"blocked": float(blocked.mean()),
