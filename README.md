@@ -6,23 +6,34 @@ branch already works with (see [`DATA_CONTRACT.md`](DATA_CONTRACT.md)).
 
 **Status (2026-11-14):** the first target from `main` is met on real data. There is a real
 `Site` for the boxwork area of Gale crater with elevation, radiation and minerals, ready for
-`Alg` (routing) and `GUI` (3D view).
+`Alg` (routing) and `GUI` (3D view). The pipeline is not Gale-only: two more regions,
+`jezero_delta` and `nili_planum`, are built from real data with the same commands
+(see [Regions](#regions)).
 
 ## Quick start
 
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python scripts\ingest_gale.py --rad-sols 4640-4669
-.venv\Scripts\python scripts\build_gale_site.py
+.venv\Scripts\python scripts\ingest_region.py --rad-sols 4640-4669
+.venv\Scripts\python scripts\build_site.py
 ```
 
-- `ingest_gale.py` downloads real data for the region: about 650 MB of traffic (540 MB of it
+- `ingest_region.py` downloads real data for the region: about 650 MB of traffic (540 MB of it
   is radiation, 18 MB per sol, deleted after parsing), 100–200 MB stays in `data/raw/`.
   It took about 15 minutes on our connection. Everything is cached: a second run downloads
   nothing. Without `--rad-sols` it loads only 5 early sols, which fall into a weather gap.
-- `build_gale_site.py` fuses it into `data/gale_boxwork/` (`layers.npz`, `site.json`,
+- `build_site.py` fuses it into `data/gale_boxwork/` (`layers.npz`, `site.json`,
   `preview.png`). Takes about a minute.
+- Both scripts work on `gale_boxwork` unless told otherwise. Another region:
+
+  ```bash
+  .venv\Scripts\python scripts\ingest_region.py --region jezero_delta --rad-sols ""
+  .venv\Scripts\python scripts\build_site.py --region jezero_delta
+  ```
+
+  `--rad-sols ""` skips radiation, which exists only near Gale. A Jezero region takes a few
+  minutes.
 
 ```python
 from mars_map import Site
@@ -42,21 +53,28 @@ No internet? `scripts\make_stub_site.py` makes the synthetic site `data/gale_stu
 .venv\Scripts\python scripts\view3d.py --open
 ```
 
-Builds `data/gale_boxwork/view3d.html`: one self-contained page (7.6 MB) with the terrain in
-3D and every layer draped over it. Open it in a browser, or send the file to someone.
-`scripts\view3d.py data/gale_stub` does the same for any other site folder.
+Builds `data/gale_boxwork/view3d.html`: one self-contained page (about 8 MB) with the terrain
+in 3D and every layer draped over it. Open it in a browser, or send the file to someone.
+`scripts\view3d.py data/jezero_delta` does the same for any other site folder.
 
-- Left sheet: pick a layer (photo, false colour, elevation, slope, terrain class, walking cost,
-  reachable area, minerals, thermal inertia), its legend, overlay strength, relief
-  exaggeration, sun direction, contours, blocked ground.
-- Right sheet: values under the cursor, the stops (click one to fly there; Curiosity stops
-  show the rover's photo from the spot), the EVA plan, radiation and temperature per sol.
+- Left sheet: pick a layer (photo, false colour, elevation, slope, roughness, terrain class,
+  walking cost, reachable area, science score, dominant mineral, the eight mineral indices,
+  thermal inertia, day and night infrared, albedo, elevation source), its legend, overlay
+  strength, relief exaggeration, sun direction, contours, blocked ground. A layer is listed
+  only if the site has it.
+- Right sheet: values under the cursor, the stops (click one to fly there; rover stops show
+  the rover's photo from the spot), the EVA plan, radiation and temperature per sol.
 - Drag to orbit, right-drag to pan, wheel to zoom, `H` hides the sheets.
 
 Shown automatically when present:
 - `data/<site>/astronaut_plan.json`, the route written by the `Alg` router (distance, time,
   oxygen, battery, dose, GO / NO-GO);
-- Curiosity's track, for regions the rover drove through.
+- the rover's track, for regions a rover drove through (Curiosity in Gale, Perseverance in
+  Jezero and Nili Planum).
+
+`--serve` always uses port 8765, so it shows one site at a time. For several at once, serve
+each site folder on its own port:
+`.venv\Scripts\python -m http.server 8766 --bind 127.0.0.1 --directory data/jezero_delta`.
 
 Checked through a local server (`--serve`) in a desktop browser. If opening the file by
 double-click shows a blank page in your browser, use `--serve`. The page template is
@@ -113,7 +131,7 @@ Series cover sols 4640–4669 (30 sols, while Curiosity stood on the boxwork). D
 
 The base is the flattest 40 m patch inside the area a crew can walk from the rover's proven
 ground without exceeding the comfortable slope (15°). That area is 33.5 % of the region.
-All 8 targets are inside it.
+All 6 targets are inside it.
 
 | Priority | Target | Position, m (x east, y south) | Why |
 |---|---|---|---|
@@ -122,10 +140,8 @@ All 8 targets are inside it.
 | 1 | Curiosity stop, sol 5045 | 1273, 1751 | rover worked here 24 sols |
 | 2 | Curiosity stop, sol 4868 | 923, 1135 | rover worked here 21 sols |
 | 2 | Curiosity stop, sol 5021 | 1345, 1779 | rover worked here 20 sols |
-| 2 | Hydrated sulfate exposure | 1385, 1441 | strongest CRISM detection (score 0.97) |
-| 2 | Hydrated minerals exposure | 1543, 101 | CRISM, bound water (score 0.68) |
-| 2 | Hydrated minerals exposure | 1583, 531 | CRISM, bound water, weak (score 0.25) |
-| 2 | Hydrated silica / Al-OH exposure | 1341, 1181 | CRISM, weak (score 0.18) |
+| 2 | Hydrated sulfate exposure | 1385, 1441 | strongest CRISM detection (score 0.76) |
+| 2 | Hydrated minerals exposure | 1543, 101 | CRISM, bound water (score 0.33) |
 
 Each Curiosity stop carries, in `target.note`, a link to a photo the rover took on the spot:
 what an astronaut would see there.
@@ -137,9 +153,16 @@ what an astronaut would see there.
   and rock layering. It ranks ground from smooth to rugged; it does not count rocks.
 - **No sand class.** Thermal inertia is 300–462 over the whole region (rocky ground), and at
   100 m per pixel it cannot see the sand ripples that are visible in the image.
-- **Mineral indices are unitless and noisy.** A cell counts as a detection above median + 3
-  sigma after smoothing over one CRISM pixel; 3.7 % of the region passes. Sulfates, hydrated
-  minerals and hydrated silica are detected. Hematite, olivine, pyroxene and clay are not.
+- **Mineral indices are unitless and noisy.** A cell counts as a detection when its index,
+  smoothed over one CRISM pixel, is above a fixed threshold; the score runs from 0 at the
+  threshold to 1 at a "strong signature" level. The thresholds are the same in every region
+  (`DETECTION` in `mars_map/fusion/science.py`), so scores can be compared between regions.
+  **They are our estimates** from the three regions we have, not a published calibration, and
+  a CRISM scene that reads low as a whole will under-detect. In Gale 3.6 % of the region
+  passes: sulfates, hydrated minerals and hydrated silica are detected; hematite, olivine,
+  pyroxene and clay are not.
+- **The science score is not a resource score.** It ranks how clearly a mineral shows and how
+  interesting it is (sulfates and clays weigh 1.0, olivine and pyroxene 0.4).
 - **Optional layers can contain `NaN`** where their source has no data (the colour bands on
   57 % of the region). Core layers are always filled, and `nodata` says where they are coarse.
 - **Radiation is one number per sol** for the whole region. There is no terrain shielding.
@@ -167,7 +190,7 @@ Rules:
 - `data/` is never committed.
 
 Choosing the region automatically (analyzer + rating, tasks B2 and B3) is not built yet.
-`gale_boxwork` was chosen by hand from Curiosity's track.
+The regions were chosen by hand from the rovers' tracks.
 
 ## Shared agreements
 
@@ -204,11 +227,43 @@ Longitudes are east-positive in -180..180, latitudes planetocentric.
 
 ### Regions
 
-Defined in `mars_map/grid.py`, both scripts take `--region`:
+Defined in `mars_map/grid.py` (`REGIONS`); `ingest_region.py` and `build_site.py` take
+`--region`. Each is 2 × 2 km at 2 m per pixel. A new region is one `RegionGrid(...)` line.
 
-- `gale_boxwork` (default): the real site described above.
-- `gale_mount_sharp`: -4.75 N, 137.38 E, 3.5 km north of the boxwork (Curiosity sols
-  2595–3700). The first test region; the synthetic stub and the fixture use its grid.
+| Region | Centre | What it is | Built on real data |
+|---|---|---|---|
+| `gale_boxwork` (default) | -4.812 N, 137.383 E | boxwork ridges on Mount Sharp, Curiosity sols 4500–5070 | yes, described above |
+| `gale_mount_sharp` | -4.75 N, 137.38 E | 3.5 km north of the boxwork, Curiosity sols 2595–3700. The first test region; the synthetic stub and the fixture use its grid | elevation and coarse layers only |
+| `jezero_delta` | 18.458 N, 77.402 E | front of the river delta in Jezero crater, Perseverance sols 400–800 | yes |
+| `nili_planum` | 18.432 N, 77.238 E | plains outside the western rim of Jezero, Perseverance sols 1600+ | yes, coarse |
+
+How the three built regions compare:
+
+| | `gale_boxwork` | `jezero_delta` | `nili_planum` |
+|---|---|---|---|
+| Elevation source | HiRISE 1 m | HiRISE 1 m | CTX 20 m (no HiRISE DTM exists there) |
+| Photo | HiRISE 1 m + colour strip | HiRISE 1 m | CTX 20 m |
+| Layers in the site | 31 | 28 | 27 |
+| Relief, median slope | 458 m, 12.7° | 121 m, 5.2° | 238 m, 7.7° |
+| Blocked | 17.5 % | 1.6 % | 0.0 % (slopes are smoothed away at 20 m) |
+| Reachable from the base | 33.5 % | 90.9 % | 87.9 % |
+| Minerals detected | 3.6 %: hydrated sulfate, hydrated minerals, silica | 88 %: olivine 82 %, clay 6.3 % | 0.3 % |
+| Targets | 4 rover stops, 2 mineral | 3 rover stops, 4 clay | 4 rover stops |
+| Weather | REMS, any sol | MEDA, 4 sols | MEDA, 4 sols |
+| Radiation | RAD, per sol | none | none |
+
+What differs outside Gale:
+
+- **Rover.** `ingest/rover.py` picks the rover by where the region is: Curiosity within 150 km
+  of its landing site, Perseverance within 150 km of its own, none elsewhere. Track, stops
+  and photos follow.
+- **No radiation.** Perseverance has no radiation detector. Jezero and Nili Planum sites have
+  no `radiation_msv_per_sol`; code that needs dose must handle its absence.
+- **Weather is four sols** (1130–1133): that is all the public Perseverance feed holds.
+- **Olivine at Jezero is everywhere but weak.** It covers 82 % of the square and never scores
+  above 0.36. The clay patches (25 ha, up to 0.92) are the strong detections.
+- **`nili_planum` is a coarse map.** With 20 m elevation there is no rock proxy, nothing is
+  classed impassable and the single CRISM scene covers a quarter of the square.
 
 ## Part A — ingestion (`mars_map/catalog/`, `mars_map/ingest/`)
 
@@ -221,15 +276,15 @@ Offline check (fake products, a local web server, a generated DTM):
 | Module | What it does |
 |---|---|
 | [`catalog/db.py`](mars_map/catalog/db.py) | `connect()`, `add_source`, `add_products`, `find_products(bbox, kind)` (finest first, with `coverage` of the bbox by the exact footprint), `add_layer`, `add_region`, `add_series` |
-| [`ingest/loaders.py`](mars_map/ingest/loaders.py) | `load_catalog(db, bbox)`: HiRISE DTMs from PDS ODE; CTX DTMs, HiRISE images, THEMIS mosaics from USGS STAC |
-| [`ingest/fetch.py`](mars_map/ingest/fetch.py) | `fetch_product()` whole file with resume; `fetch_window()` reads only the pixels over a region from a remote raster (this is how 2–23 GB mosaics are used) |
+| [`ingest/loaders.py`](mars_map/ingest/loaders.py) | `load_catalog(db, bbox)`: HiRISE DTMs from PDS ODE; CTX DTMs with their orthoimages, HiRISE images, THEMIS mosaics from USGS STAC |
+| [`ingest/fetch.py`](mars_map/ingest/fetch.py) | `fetch_product()` whole file with resume; `fetch_window()` reads only the pixels over a region from a remote raster (this is how 2–23 GB mosaics are used); `source_crs()` repairs the projection of HiRISE ortho JP2 files |
 | [`ingest/normalize.py`](mars_map/ingest/normalize.py) | `normalize()`: reproject to the region grid, nodata → NaN, units, mosaic of several products with the height offset between DTMs removed, register in `layers` |
 | [`ingest/global_layers.py`](mars_map/ingest/global_layers.py) | MOLA 463 m and HRSC+MOLA 200 m elevation, THEMIS day/night IR, TES albedo |
-| [`ingest/series.py`](mars_map/ingest/series.py) | REMS weather for every mission sol; RAD dose per requested sol (`--rad-sols`) |
+| [`ingest/series.py`](mars_map/ingest/series.py) | Curiosity: REMS weather for every mission sol, RAD dose per requested sol (`--rad-sols`). Perseverance: MEDA weather from the public feed |
 | [`ingest/minerals.py`](mars_map/ingest/minerals.py) | CRISM summary-parameter cubes: downloads only the 8 bands we use (2 MB each instead of a 130 MB cube) |
-| [`ingest/optical.py`](mars_map/ingest/optical.py) | HiRISE orthoimages that ship with the DTMs: grayscale, colour bands, and `optical_texture` computed at the native 1 m |
+| [`ingest/optical.py`](mars_map/ingest/optical.py) | HiRISE orthoimages that ship with the DTMs: grayscale, colour bands, and `optical_texture` computed at the native 1 m. Where there is no HiRISE orthoimage, the 20 m CTX orthoimage becomes `optical` |
 | [`ingest/thermal.py`](mars_map/ingest/thermal.py) | THEMIS quantitative thermal inertia: picks the 30° × 60° tile, reads only the region |
-| [`ingest/rover.py`](mars_map/ingest/rover.py) | Curiosity waypoints (track, long stops) and a link to a photo taken at a stop |
+| [`ingest/rover.py`](mars_map/ingest/rover.py) | Curiosity or Perseverance, picked by region: waypoints (track, long stops) and a link to a photo taken at a stop |
 
 ### Sources (all verified 2026-11)
 
@@ -238,7 +293,7 @@ Offline check (fake products, a local web server, a generated DTM):
 | `hirise_dtm` | PDS ODE | `ihid=MRO&iid=HIRISE&pt=DTM` | `DTEEC_*.IMG`, 1 m |
 | `hirise_ortho`, `hirise_color` | PDS ODE | file list of the same DTM products | `*_RED_C_01_ORTHO.JP2`, `*_IRB_C_01_ORTHO.JP2`, 1 m |
 | `crism` | PDS ODE | `ihid=MRO&iid=CRISM&pt=MTRDR` | `*_su*j_mtr3.img` + `.hdr`, 18 m |
-| `ctx_dtm`, `ctx_optical` | USGS STAC | `mro_ctx_controlled_usgs_dtms` | assets `geoid_adjusted_dem` (20 m), `orthoimage` |
+| `ctx_dtm`, `ctx_optical` | USGS STAC | `mro_ctx_controlled_usgs_dtms` | assets `geoid_adjusted_dem` or `dtm` (20 m), `orthoimage` (20 m) |
 | `hirise_optical` | USGS STAC | `mro_hirise_uncontrolled_observations` | asset `image`, 0.25 m (catalogued, not used) |
 | `themis` | USGS STAC | `mo_themis_controlled_mosaics` | asset `image`, 100 m, 8-bit |
 | `themis_ti` | USGS Astropedia (S3) | `THEMIS_TI_Mosaic_Quant_<tile>_100mpp.cub` | ISIS cube, 100 m, latitudes -60..60 |
@@ -247,6 +302,9 @@ Offline check (fake products, a local web server, a generated DTM):
 | `rad` | PDS PPI | `MSL-M-RAD-3-RDR-V1.0` | one text file per sol, 18 MB |
 | rover track | mars.nasa.gov | `mmgis-maps/MSL/Layers/json/MSL_waypoints.json` | GeoJSON |
 | rover photos | mars.nasa.gov | `api/v1/raw_image_items/?condition_2=<sol>:sol:in` | JSON with image links |
+| `meda` (Perseverance weather) | mars.nasa.gov | weather feed `?feed=weather&category=mars2020` | JSON, a handful of sols |
+| Perseverance track | mars.nasa.gov | `mmgis-maps/M20/Layers/json/M20_waypoints.json` | GeoJSON |
+| Perseverance photos | mars.nasa.gov | `rss/api/?feed=raw_images&category=mars2020&sol=<sol>` | JSON with image links |
 
 Working query examples:
 
@@ -274,6 +332,13 @@ Things to know:
   453–457 fall into a gap, which is why the quick start asks for 4640–4669.
 - Reading a JP2 window over HTTP takes minutes, so orthoimages under 150 MB are downloaded
   whole and cropped locally.
+- **HiRISE ortho JP2 files carry a wrong projection field** outside the equatorial band: the
+  standard parallel is stored as the latitude of origin, so read literally the image lands
+  15° of latitude away. `source_crs()` in `ingest/fetch.py` repairs it. Gale never showed it
+  because its standard parallel is 0.
+- **The CTX DTM asset has two names** in the same STAC collection: `geoid_adjusted_dem` around
+  Gale, `dtm` around Jezero. Both are metres above the areoid (checked against MOLA).
+- **No HiRISE DTM west of the Jezero rim**, so `nili_planum` runs on CTX.
 - Not found: TES thermal inertia and TES mineral maps as direct downloads. THEMIS thermal
   inertia and CRISM replace them at far better resolution.
 
@@ -290,7 +355,7 @@ stub it was cut from:
 |---|---|
 | [`analysis/fixture.py`](mars_map/analysis/fixture.py) | fake catalog with 4 regions and Gale layers degraded like real sources; lets B run without A |
 | [`fusion/stack.py`](mars_map/fusion/stack.py) | `fuse_region()`: finest source per pixel, coarse sources blended in at the seam (no fake cliffs), `nodata` and `source_res`, `slope`, `roughness`, `terrain_class`, series cut to their common sols |
-| [`fusion/science.py`](mars_map/fusion/science.py) | CRISM indices → detection scores, `science_score`, `mineral_dominant`; `rock_abundance` proxy from image texture; `ridge_index`; `pick_base()`, `mineral_targets()` |
+| [`fusion/science.py`](mars_map/fusion/science.py) | CRISM indices → detection scores with fixed thresholds per mineral (`DETECTION`, same in every region), `science_score`, `mineral_dominant`; `rock_abundance` proxy from image texture; `ridge_index`; `pick_base()`, `mineral_targets()` |
 | [`fusion/derived.py`](mars_map/fusion/derived.py) | `blocked` (hard mask), `cost`, `value`, `walkable_mask()`, `reachable_mask()` |
 
 How well fusion keeps the truth, measured on the fixture: elevation is exact where the fine
@@ -309,8 +374,14 @@ on 97.6 % of cells; no false cliffs at source seams.
 - [ ] **Radiation shielding by terrain** (sky view from the DTM) and **shadows by time of day**.
 - [ ] **Geologic map** (USGS units) as a layer.
 - [ ] **Real limits** in `MissionParams` and `CostWeights`, from the `Alg` research questions.
-- [ ] **A second region** (Jezero) to prove the pipeline is not Gale-only. The rover track
-      and series modules are Curiosity-specific.
+- [x] **A second region** to prove the pipeline is not Gale-only: `jezero_delta` and
+      `nili_planum` are built.
+- [ ] **Mineral thresholds reviewed** by someone on the science side; they are estimates.
+- [ ] **Radiation for regions without a rover detector** (Jezero): leave empty, or use Gale's
+      measurements as a labelled stand-in. To decide with `Alg`.
+- [ ] **Full Perseverance weather** from the PDS archive; the public feed has four sols.
+- [ ] **Several maps at once**: a `--port` option for `view3d.py --serve`, or one page that
+      switches between built regions.
 
 ## Git
 

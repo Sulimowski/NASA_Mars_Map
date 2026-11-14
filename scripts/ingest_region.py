@@ -1,10 +1,14 @@
-"""Part A end to end on real NASA data, for one region (default: Gale, Mount Sharp).
+"""Part A end to end on real NASA data, for one region (default: gale_boxwork).
 
 catalog (ODE + STAC) -> pick DTMs -> fetch -> normalize -> global layers -> time series
+-> minerals -> optical -> thermal inertia
 
-    .venv\\Scripts\\python scripts\\ingest_gale.py                # ~150 MB of traffic, crops only
-    .venv\\Scripts\\python scripts\\ingest_gale.py --full         # download whole DTM files instead
-    .venv\\Scripts\\python scripts\\ingest_gale.py --rad-sols 453-482
+    .venv\\Scripts\\python scripts\\ingest_region.py --rad-sols 4640-4669        # Gale boxwork
+    .venv\\Scripts\\python scripts\\ingest_region.py --region jezero_delta --rad-sols ""
+    .venv\\Scripts\\python scripts\\ingest_region.py --full      # download whole DTM files instead
+
+Regions are defined in mars_map/grid.py (REGIONS). Radiation (--rad-sols, 18 MB per sol)
+exists only for regions near Gale; pass "" elsewhere.
 
 Everything is cached: a second run does not download anything again.
 Output: data/catalog.sqlite, data/raw/, data/processed/<region>/.

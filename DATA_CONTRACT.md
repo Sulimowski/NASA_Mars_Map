@@ -6,7 +6,7 @@ There are two sites in the same format:
 | Site | What it is | How to get it |
 |---|---|---|
 | `gale_stub` | **synthetic**, shaped like the Mount Sharp foothills, with traps built in on purpose | `scripts\make_stub_site.py`, 3 seconds, no internet |
-| `gale_boxwork` | **real NASA data**, the boxwork area of Gale crater | `scripts\ingest_gale.py` then `scripts\build_gale_site.py`, see `README.md` |
+| `gale_boxwork` | **real NASA data**, the boxwork area of Gale crater | `scripts\ingest_region.py` then `scripts\build_site.py`, see `README.md` |
 
 Code written against the stub works on the real site if it follows the rules in
 "Writing code that works on both" below.

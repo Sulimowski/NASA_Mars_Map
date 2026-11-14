@@ -1,10 +1,10 @@
 """Parts A and B together on real data:
 
-    data/catalog.sqlite + data/processed/  (written by scripts/ingest_gale.py)
+    data/catalog.sqlite + data/processed/  (written by scripts/ingest_region.py)
         -> fusion -> derived layers -> base + targets -> data/<region>/  (a Site, same format as the stub)
 
-    .venv\\Scripts\\python scripts\\ingest_gale.py       # part A, once
-    .venv\\Scripts\\python scripts\\build_gale_site.py   # part B on its output
+    .venv\\Scripts\\python scripts\\ingest_region.py       # part A, once
+    .venv\\Scripts\\python scripts\\build_site.py   # part B on its output
 """
 
 import argparse
@@ -153,7 +153,7 @@ def main():
     ap.add_argument("--region", default="gale_boxwork", choices=sorted(REGIONS))
     args = ap.parse_args()
     if not CATALOG_DB.exists():
-        sys.exit(f"{CATALOG_DB} not found: run scripts/ingest_gale.py first")
+        sys.exit(f"{CATALOG_DB} not found: run scripts/ingest_region.py first")
     g = REGIONS[args.region]
     out = DATA_DIR / g.name
 
@@ -164,7 +164,7 @@ def main():
         "WHERE r.name=? ORDER BY l.name, l.native_res_m", (g.name,)).fetchall()
     db.close()
     if not rows:
-        sys.exit(f"no processed layers for {g.name}: run scripts/ingest_gale.py --region {g.name}")
+        sys.exit(f"no processed layers for {g.name}: run scripts/ingest_region.py --region {g.name}")
     print(f"layers in the catalog for {g.name}:")
     for name, src, res, cov in rows:
         print(f"  {name:22s} {src:14s} {res:7.1f} m  cover {cov:6.1%}")
