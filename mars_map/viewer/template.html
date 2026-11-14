@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mars map sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Martian+Mono:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#efe5cf; --paper-2:#e6dabf; --ink:#1f1813; --ink-soft:#5a4a3d; --rule:rgba(31,24,19,.55);
+  --rust:#b3461f; --rust-deep:#7d2c10; --route:#12d6c6; --go:#2f7d4f;
+  --serif:"Instrument Serif","Iowan Old Style",Georgia,serif;
+  --mono:"Martian Mono","Cascadia Mono",Consolas,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden;background:#150e0b;color:var(--ink);font-family:var(--mono);font-size:10.5px;line-height:1.5}
+body{background:linear-gradient(180deg,#120b09 0%,#2a1911 26%,#6b4029 58%,#c88b5a 84%,#e8b98a 100%)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.16;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E")}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#gl.dragging{cursor:grabbing}
+#labels{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+.tag{position:absolute;transform:translate(-50%,-100%);white-space:nowrap;pointer-events:auto;cursor:pointer;
+  background:var(--paper);color:var(--ink);border:1px solid var(--ink);padding:2px 6px 2px 4px;font-size:9px;letter-spacing:.04em;
+  box-shadow:2px 2px 0 rgba(20,12,8,.55);transition:background .15s,color .15s}
+.tag b{display:inline-block;min-width:13px;text-align:center;margin-right:5px;background:var(--ink);color:var(--paper);font-weight:600}
+.tag.rover b{background:var(--rust)} .tag.base b{background:var(--go)}
+.tag:hover,.tag.on{background:var(--ink);color:var(--paper)} .tag:hover b,.tag.on b{background:var(--paper);color:var(--ink)}
+
+.sheet{position:fixed;top:14px;bottom:14px;width:292px;display:flex;flex-direction:column;
+  background:var(--paper);border:1px solid var(--ink);outline:1px solid var(--ink);outline-offset:3px;
+  box-shadow:0 18px 50px rgba(8,4,2,.6);opacity:0;animation:rise .9s cubic-bezier(.2,.8,.2,1) forwards}
+.sheet::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;mix-blend-mode:multiply;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.035 .9' numOctaves='3'/%3E%3CfeColorMatrix values='0 0 0 0 .55 0 0 0 0 .45 0 0 0 0 .3 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23p)'/%3E%3C/svg%3E")}
+.sheet.left{left:17px;animation-delay:.35s;transform:translateX(-18px)}
+.sheet.right{right:17px;animation-delay:.55s;transform:translateX(18px)}
+@keyframes rise{to{opacity:1;transform:none}}
+body.bare .sheet,body.bare .compass{opacity:0!important;pointer-events:none;transition:opacity .3s}
+.scroll{overflow-y:auto;flex:1;scrollbar-width:thin;scrollbar-color:var(--ink-soft) transparent;position:relative}
+section{padding:11px 14px 12px;border-bottom:1px solid var(--rule);position:relative}
+section:last-child{border-bottom:0}
+h2{margin:0 0 7px;font:600 9px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+h2::after{content:"";flex:1;height:1px;background:var(--rule)}
+
+.cartouche{padding:15px 14px 13px;border-bottom:3px double var(--ink);position:relative}
+.kicker{font-size:8.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--rust-deep)}
+.cartouche h1{margin:3px 0 4px;font:italic 400 37px/.95 var(--serif);letter-spacing:-.01em;text-transform:capitalize}
+.cartouche p{margin:0;color:var(--ink-soft);font-size:9.5px}
+.cartouche .facts{display:grid;grid-template-columns:1fr 1fr;gap:1px;margin-top:10px;background:var(--rule);border:1px solid var(--rule)}
+.facts div{background:var(--paper);padding:5px 7px}
+.facts small{display:block;font-size:7.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft)}
+.facts span{font-size:12px;font-weight:600}
+
+.group{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-soft);margin:8px 0 2px}
+.group:first-child{margin-top:0}
+.layer{display:flex;align-items:center;gap:8px;padding:3px 5px;margin:0 -5px;cursor:pointer;border:1px solid transparent}
+.layer:hover{border-color:var(--rule)}
+.layer.on{background:var(--ink);color:var(--paper)}
+.layer i{flex:0 0 26px;height:9px;border:1px solid var(--ink);background:var(--paper-2)}
+.layer.on i{border-color:var(--paper)}
+.legend .bar{height:11px;border:1px solid var(--ink)}
+.legend .ends{display:flex;justify-content:space-between;margin-top:2px;font-weight:600}
+.legend .ends em{font-style:normal;font-weight:300;color:var(--ink-soft)}
+.chips{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px}
+.chips span{display:flex;align-items:center;gap:6px}
+.chips i{flex:0 0 11px;height:11px;border:1px solid var(--ink)}
+.note{margin:7px 0 0;color:var(--ink-soft);font-size:9.5px}
+
+.ctl{display:grid;grid-template-columns:86px 1fr 34px;align-items:center;gap:7px;margin:5px 0}
+.ctl output{text-align:right;font-weight:600}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:13px;background:transparent;margin:0}
+input[type=range]::-webkit-slider-runnable-track{height:1px;background:var(--ink)}
+input[type=range]::-moz-range-track{height:1px;background:var(--ink)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:9px;height:13px;margin-top:-6px;background:var(--rust);border:1px solid var(--ink);cursor:ew-resize}
+input[type=range]::-moz-range-thumb{width:8px;height:12px;border-radius:0;background:var(--rust);border:1px solid var(--ink);cursor:ew-resize}
+.toggles{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+.toggles button{font:inherit;font-size:9px;letter-spacing:.06em;background:transparent;color:var(--ink);border:1px solid var(--ink);padding:3px 7px;cursor:pointer}
+.toggles button.on{background:var(--ink);color:var(--paper)}
+
+table{width:100%;border-collapse:collapse}
+td{padding:1.5px 0;vertical-align:top} td:first-child{color:var(--ink-soft);width:44%} td:last-child{text-align:right;font-weight:600}
+.stop{display:grid;grid-template-columns:19px 1fr auto;gap:7px;align-items:baseline;padding:4px 5px;margin:0 -5px;cursor:pointer;border:1px solid transparent}
+.stop:hover{border-color:var(--rule)} .stop.on{background:var(--ink);color:var(--paper)}
+.stop b{text-align:center;background:var(--ink);color:var(--paper);font-weight:600}
+.stop.rover b{background:var(--rust)} .stop.base b{background:var(--go)} .stop.on b{background:var(--paper);color:var(--ink)}
+.stop small{color:var(--ink-soft)} .stop.on small{color:var(--paper-2)}
+#detail{margin-top:9px;padding-top:9px;border-top:1px dashed var(--rule);display:none}
+#detail h3{margin:0 0 3px;font:italic 400 21px/1.05 var(--serif)}
+#detail img{display:block;width:100%;margin-top:8px;border:1px solid var(--ink);filter:sepia(.18) contrast(1.04)}
+#detail a{color:var(--rust-deep)}
+.plan{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.plan div{background:var(--paper);padding:5px 6px}
+.plan small{display:block;font-size:7.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
+.plan span{font-size:12.5px;font-weight:600}
+.stamp{position:absolute;right:13px;top:6px;font:600 11px/1 var(--mono);letter-spacing:.18em;padding:4px 7px 3px;border:2px solid;transform:rotate(-7deg);opacity:.86;background:var(--paper)}
+.stamp.go{color:var(--go)} .stamp.nogo{color:var(--rust)}
+.warn{margin:7px 0 0;color:var(--rust-deep)}
+svg.spark{display:block;width:100%;height:58px;margin-top:3px;overflow:visible}
+.spark text{font:300 8px var(--mono);fill:var(--ink-soft)}
+.foot{padding:9px 14px;font-size:8.5px;color:var(--ink-soft);border-top:3px double var(--ink);position:relative}
+
+.compass{position:fixed;left:50%;top:16px;transform:translateX(-50%);width:54px;height:54px;opacity:0;animation:rise 1s .9s forwards}
+.compass svg{width:100%;height:100%;filter:drop-shadow(0 2px 6px rgba(0,0,0,.6))}
+.hint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);color:#f3e2c8;font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+  text-shadow:0 1px 4px #000;opacity:.75;pointer-events:none;white-space:nowrap}
+#loading{position:fixed;inset:0;display:grid;place-items:center;background:#120b09;color:#e8cfa9;z-index:9;transition:opacity .8s}
+#loading div{font:italic 400 30px var(--serif)} #loading small{display:block;font:300 9px var(--mono);letter-spacing:.3em;text-transform:uppercase;margin-top:8px;opacity:.7}
+#loading.gone{opacity:0;pointer-events:none}
+@media (max-width:1000px){.sheet.right{display:none}.sheet{width:260px}}
+@media (prefers-reduced-motion:reduce){.sheet,.compass{animation-duration:.01s}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="labels"></div>
+
+<aside class="sheet left">
+  <div class="cartouche">
+    <div class="kicker" id="kicker">Mars</div>
+    <h1 id="title">Site</h1>
+    <p id="coords"></p>
+    <div class="facts" id="facts"></div>
+  </div>
+  <div class="scroll">
+    <section><h2>Layer</h2><div id="layers"></div></section>
+    <section class="legend"><h2>Legend</h2><div id="legend"></div></section>
+    <section><h2>View</h2>
+      <div class="ctl"><label for="op">Overlay</label><input id="op" type="range" min="0" max="1" step="0.01" value="0.85"><output id="opv"></output></div>
+      <div class="ctl"><label for="ex">Relief &times;</label><input id="ex" type="range" min="0.5" max="3" step="0.05" value="1"><output id="exv"></output></div>
+      <div class="ctl"><label for="az">Sun bearing</label><input id="az" type="range" min="0" max="360" step="1" value="300"><output id="azv"></output></div>
+      <div class="ctl"><label for="al">Sun height</label><input id="al" type="range" min="4" max="85" step="1" value="34"><output id="alv"></output></div>
+      <div class="toggles" id="toggles"></div>
+    </section>
+  </div>
+  <div class="foot" id="foot"></div>
+</aside>
+
+<aside class="sheet right">
+  <div class="scroll">
+    <section><h2>Under cursor</h2><table id="probe"><tr><td>Move over the terrain</td><td></td></tr></table></section>
+    <section><h2>Stops</h2><div id="stops"></div><div id="detail"></div></section>
+    <section id="planBox" style="display:none"><h2>EVA plan</h2><div id="plan"></div></section>
+    <section id="condBox" style="display:none"><h2>Conditions</h2><div id="cond"></div></section>
+  </div>
+</aside>
+
+<div class="compass" title="North"><svg viewBox="-30 -30 60 60" id="rose">
+  <circle r="26" fill="#efe5cf" stroke="#1f1813"/><circle r="22" fill="none" stroke="#1f1813" stroke-width=".5"/>
+  <g id="needle"><path d="M0-21 6 0 0-4-6 0Z" fill="#b3461f" stroke="#1f1813" stroke-width=".6"/>
+  <path d="M0 21 6 0 0 4-6 0Z" fill="#efe5cf" stroke="#1f1813" stroke-width=".6"/>
+  <text y="-9" text-anchor="middle" font-family="Georgia,serif" font-style="italic" font-size="9" fill="#efe5cf">N</text></g></svg></div>
+<div class="hint">drag: orbit &nbsp;&middot;&nbsp; right-drag: pan &nbsp;&middot;&nbsp; wheel: zoom &nbsp;&middot;&nbsp; H: hide panels</div>
+<div id="loading"><div>Unrolling the sheet<small>building terrain</small></div></div>
+
+<script id="three-src" type="text/plain">/*__THREE_SOURCE__*/</script>
+<script id="site-data" type="application/json">/*__SITE_DATA__*/</script>
+<script type="module">
+const D = JSON.parse(document.getElementById('site-data').textContent);
+const $ = id => document.getElementById(id);
+const u8 = s => { const b = atob(s), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+
+async function loadThree() {
+  const src = $('three-src').textContent;
+  if (src.length > 5000) return import(URL.createObjectURL(new Blob([src], {type: 'text/javascript'})));
+  return import(D.threeUrl);                       // the page was built without a cached copy
+}
+const THREE = await loadThree();
+THREE.ColorManagement.enabled = false;
+
+// ---------- terrain data ----------
+const {rows, cols, emin, emax} = D.mesh, relief = emax - emin, W = D.width, H = D.height;
+const H16 = new Uint16Array(u8(D.mesh.heights).buffer);
+const probes = Object.fromEntries(Object.entries(D.probes).map(([k, p]) => [k, {...p, a: u8(p.data)}]));
+let exag = 1;
+function hAt(x, z) {                                // world metres (centred) -> height above the lowest point
+  const fc = Math.min(Math.max((x / W + .5) * (cols - 1), 0), cols - 1.001);
+  const fr = Math.min(Math.max((z / H + .5) * (rows - 1), 0), rows - 1.001);
+  const c = fc | 0, r = fr | 0, u = fc - c, v = fr - r, i = r * cols + c;
+  return ((H16[i] * (1 - u) + H16[i + 1] * u) * (1 - v) + (H16[i + cols] * (1 - u) + H16[i + cols + 1] * u) * v) / 65535 * relief;
+}
+const world = (xm, ym, lift = 0) => new THREE.Vector3(xm - W / 2, hAt(xm - W / 2, ym - H / 2) * exag + lift, ym - H / 2);
+
+// ---------- renderer ----------
+const canvas = $('gl');
+const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, 1, 5, 40000);
+
+async function texture(uri) {
+  // onload, not img.decode(): decode() can wait forever while the tab is in the background
+  const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error('texture failed to load')); i.src = uri; });
+  const t = new THREE.Texture(img);
+  t.colorSpace = THREE.NoColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.needsUpdate = true;
+  return t;
+}
+const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1); blank.needsUpdate = true;
+
+const uniforms = {
+  uBase: {value: blank}, uLayer: {value: blank}, uMask: {value: blank},
+  uOpacity: {value: .85}, uExag: {value: 1}, uSun: {value: new THREE.Vector3(0, 1, 0)},
+  uContour: {value: 1}, uHatch: {value: 0}, uShade: {value: .45},
+  uHaze: {value: new THREE.Color(0xd9a777)},
+};
+const terrainMat = new THREE.ShaderMaterial({
+  uniforms, side: THREE.DoubleSide,
+  vertexShader: `
+    uniform float uExag; varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vElev; varying float vDist;
+    void main(){ vUv = uv; vElev = position.y; vec3 p = position; p.y *= uExag;
+      vN = normalize(vec3(normal.x * uExag, normal.y, normal.z * uExag)); vW = p;
+      vec4 mv = modelViewMatrix * vec4(p, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `
+    uniform sampler2D uBase, uLayer, uMask; uniform float uOpacity, uContour, uHatch, uShade; uniform vec3 uSun, uHaze;
+    varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vElev; varying float vDist;
+    float line(float e, float step_){ float f = e / step_; float w = fwidth(f) * 1.15; return 1.0 - smoothstep(0.0, w, abs(fract(f - 0.5) - 0.5)); }
+    void main(){
+      vec3 base = texture2D(uBase, vUv).rgb; vec4 lay = texture2D(uLayer, vUv);
+      float k = uOpacity * lay.a; vec3 c = mix(base, lay.rgb, k);
+      float lit = 0.42 + 0.86 * max(dot(normalize(vN), uSun), 0.0);
+      c *= mix(1.0, lit, mix(uShade, 0.85, k));
+      float m = texture2D(uMask, vUv).r * uHatch;
+      float stripe = step(0.5, fract((vW.x + vW.z) / 13.0));
+      c = mix(c, vec3(0.70, 0.13, 0.05), m * (0.30 + 0.45 * stripe));
+      float near = 1.0 - smoothstep(2600.0, 5200.0, vDist);
+      float ct = max(0.42 * line(vElev, 10.0), 0.72 * line(vElev, 50.0)) * uContour * near;
+      c = mix(c, vec3(0.13, 0.08, 0.05), ct);
+      c = mix(c, uHaze, 0.42 * smoothstep(2200.0, 9000.0, vDist));
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+
+{ // surface
+  const pos = new Float32Array(rows * cols * 3), uv = new Float32Array(rows * cols * 2);
+  for (let r = 0, i = 0; r < rows; r++) for (let c = 0; c < cols; c++, i++) {
+    pos[i * 3] = (c / (cols - 1) - .5) * W; pos[i * 3 + 1] = H16[i] / 65535 * relief; pos[i * 3 + 2] = (r / (rows - 1) - .5) * H;
+    uv[i * 2] = c / (cols - 1); uv[i * 2 + 1] = 1 - r / (rows - 1);
+  }
+  const idx = new Uint32Array((rows - 1) * (cols - 1) * 6);
+  for (let r = 0, k = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {
+    const a = r * cols + c, b = a + cols; idx[k++] = a; idx[k++] = b; idx[k++] = a + 1; idx[k++] = b; idx[k++] = b + 1; idx[k++] = a + 1;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(new THREE.BufferAttribute(idx, 1)); g.computeVertexNormals();
+  const mesh = new THREE.Mesh(g, terrainMat); mesh.frustumCulled = false; scene.add(mesh);
+}
+{ // the cut sides of the block, drawn as rock strata
+  const depth = Math.max(relief * .16, 40), P = [], T = [], I = [];
+  const edge = [];
+  for (let c = 0; c < cols; c++) edge.push([0, c]);
+  for (let r = 1; r < rows; r++) edge.push([r, cols - 1]);
+  for (let c = cols - 2; c >= 0; c--) edge.push([rows - 1, c]);
+  for (let r = rows - 2; r >= 0; r--) edge.push([r, 0]);
+  edge.forEach(([r, c], n) => {
+    const x = (c / (cols - 1) - .5) * W, z = (r / (rows - 1) - .5) * H, h = H16[r * cols + c] / 65535 * relief;
+    P.push(x, h, z, x, 0, z); T.push(1, 0);
+    const a = n * 2, b = ((n + 1) % edge.length) * 2; I.push(a, a + 1, b, b, a + 1, b + 1);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('top', new THREE.Float32BufferAttribute(T, 1)); g.setIndex(I);
+  scene.add(new THREE.Mesh(g, new THREE.ShaderMaterial({
+    uniforms: {uExag: uniforms.uExag, uDepth: {value: depth}}, side: THREE.DoubleSide,
+    vertexShader: `attribute float top; uniform float uExag, uDepth; varying float vE; varying float vY;
+      void main(){ vec3 p = position; vE = top > .5 ? position.y : -uDepth / max(uExag, .01); p.y = top > .5 ? position.y * uExag : -uDepth; vY = p.y;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
+    fragmentShader: `uniform float uDepth; varying float vE; varying float vY;
+      void main(){ float f = vE / 10.0; float l = 1.0 - smoothstep(0.0, fwidth(f) * 1.2, abs(fract(f - .5) - .5));
+      float band = 0.5 + 0.5 * sin(vE * 0.37) * sin(vE * 0.11);
+      vec3 c = mix(vec3(0.20, 0.115, 0.075), vec3(0.36, 0.215, 0.14), band * 0.55);
+      c = mix(c, vec3(0.09, 0.05, 0.035), 0.5 * l); c *= 0.62 + 0.38 * smoothstep(-uDepth, 0.0, vY);
+      gl_FragColor = vec4(c, 1.0); }`,
+  })));
+}
+
+// ---------- things on the map ----------
+const overlay = new THREE.Group(); scene.add(overlay);
+const stops = [{name: 'Base', x: D.start[0], y: D.start[1], kind: 'base', priority: 0, note: 'Start and finish of every walk.', photo: null},
+               ...D.targets];
+const INK = 0x1f1813, PAPER = 0xefe5cf, RUST = 0xb3461f, GOLD = 0xf2c230, GREEN = 0x3f9a63, ROUTE = 0x12d6c6;
+const headOf = k => k === 'base' ? [new THREE.ConeGeometry(15, 26, 4), GREEN]
+  : k === 'rover' ? [new THREE.SphereGeometry(11, 20, 14), RUST]
+  : k === 'mineral' ? [new THREE.OctahedronGeometry(12), GOLD] : [new THREE.BoxGeometry(17, 17, 17), PAPER];
+const pins = stops.map((s, i) => {
+  const g = new THREE.Group(), [geo, col] = headOf(s.kind);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 58, 6), new THREE.MeshBasicMaterial({color: PAPER}));
+  stem.position.y = 29;
+  const head = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: col})); head.position.y = 66;
+  const rim = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: INK, side: THREE.BackSide})); rim.position.y = 66; rim.scale.setScalar(1.16);
+  g.add(stem, rim, head); overlay.add(g);
+  const tag = document.createElement('div');
+  tag.className = 'tag ' + s.kind; tag.innerHTML = `<b>${i === 0 ? 'B' : i}</b>${s.name.replace(/ exposure \d+$/, '').replace(/\s*\(.*?\)/, '')}`;
+  tag.onclick = () => select(i, true); $('labels').appendChild(tag);
+  return {g, head, tag, s};
+});
+const ring = new THREE.Mesh(new THREE.RingGeometry(13, 16.5, 40), new THREE.MeshBasicMaterial({color: PAPER, side: THREE.DoubleSide, transparent: true, opacity: .9, depthTest: false}));
+ring.rotation.x = -Math.PI / 2; ring.visible = false; ring.renderOrder = 5; scene.add(ring);
+
+let trackMesh = null, routeMesh = null, routeCurve = null;
+const walker = new THREE.Mesh(new THREE.SphereGeometry(9, 16, 12), new THREE.MeshBasicMaterial({color: 0xffffff}));
+const halo = new THREE.Mesh(new THREE.SphereGeometry(17, 16, 12), new THREE.MeshBasicMaterial({color: ROUTE, transparent: true, opacity: .35}));
+walker.add(halo); walker.visible = false; scene.add(walker);
+function tube(points, radius, color, lift) {
+  if (!points || points.length < 2) return [null, null];
+  const curve = new THREE.CatmullRomCurve3(points.map(p => world(p[0], p[1], lift)), false, 'centripetal', .5);
+  const m = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(points.length * 3, 2400), radius, 6, false), new THREE.MeshBasicMaterial({color}));
+  overlay.add(m); return [m, curve];
+}
+function layout() {                                // everything that sits on the surface follows the relief scale
+  pins.forEach(p => p.g.position.copy(world(p.s.x, p.s.y)));
+  for (const m of [trackMesh, routeMesh]) if (m) { overlay.remove(m); m.geometry.dispose(); }
+  [trackMesh] = tube(D.track, 1.7, PAPER, 2.2);
+  [routeMesh, routeCurve] = tube(D.route && D.route.points, 3.4, ROUTE, 3.6);
+  applyToggles();
+}
+
+// ---------- camera: orbit / pan / zoom with easing ----------
+const cam = {az: 2.5, el: 1.36, r: Math.max(W, H) * 3.1, x: 0, z: 0};
+const goal = {az: -.62, el: .56, r: Math.max(W, H) * 1.52, x: 0, z: H * .04};
+let ease = .028, drag = null, moved = 0;
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerdown', e => { drag = {x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey}; moved = 0; ease = .16; canvas.setPointerCapture(e.pointerId); canvas.classList.add('dragging'); });
+canvas.addEventListener('pointerup', e => { canvas.classList.remove('dragging'); if (drag && moved < 5) clickAt(); drag = null; });
+canvas.addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY; mouse.fresh = true;
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
+  if (drag.pan) {
+    const k = goal.r * .0011, s = Math.sin(goal.az), c = Math.cos(goal.az);
+    goal.x += (-dx * c - dy * s) * k; goal.z += (dx * s - dy * c) * k;
+    goal.x = Math.max(-W * .6, Math.min(W * .6, goal.x)); goal.z = Math.max(-H * .6, Math.min(H * .6, goal.z));
+  } else { goal.az -= dx * .0052; goal.el = Math.max(.09, Math.min(1.5, goal.el + dy * .0042)); }
+});
+canvas.addEventListener('wheel', e => { e.preventDefault(); ease = .16; goal.r = Math.max(120, Math.min(Math.max(W, H) * 4, goal.r * Math.exp(e.deltaY * .0011))); }, {passive: false});
+addEventListener('keydown', e => { if (e.key === 'h' || e.key === 'H') document.body.classList.toggle('bare'); });
+const mouse = {x: 0, y: 0, fresh: false};
+function placeCamera() {
+  for (const k of ['az', 'el', 'r', 'x', 'z']) cam[k] += (goal[k] - cam[k]) * ease;
+  const ty = hAt(cam.x, cam.z) * exag, ce = Math.cos(cam.el);
+  camera.position.set(cam.x + cam.r * ce * Math.sin(cam.az), ty + cam.r * Math.sin(cam.el), cam.z + cam.r * ce * Math.cos(cam.az));
+  camera.lookAt(cam.x, ty, cam.z);
+  $('needle').setAttribute('transform', `rotate(${cam.az * 180 / Math.PI})`);
+}
+
+// ---------- cursor readout: march the view ray over the height field ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let hit = null;
+function pick() {
+  ndc.set(mouse.x / innerWidth * 2 - 1, -(mouse.y / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
+  const o = ray.ray.origin, d = ray.ray.direction, p = new THREE.Vector3();
+  let prev = 0;
+  for (let t = 0; t < 30000; t += 5) {
+    p.copy(d).multiplyScalar(t).add(o);
+    if (Math.abs(p.x) <= W / 2 && Math.abs(p.z) <= H / 2 && p.y <= hAt(p.x, p.z) * exag) {
+      let a = prev, b = t;
+      for (let i = 0; i < 12; i++) { const m = (a + b) / 2; p.copy(d).multiplyScalar(m).add(o); (p.y <= hAt(p.x, p.z) * exag) ? b = m : a = m; }
+      return p.clone();
+    }
+    if (p.y < -50) break; prev = t;
+  }
+  return null;
+}
+const fmt = (v, n = 1) => v == null || !isFinite(v) ? '–' : v.toLocaleString('en-US', {minimumFractionDigits: n, maximumFractionDigits: n});
+function readout() {
+  hit = pick(); ring.visible = !!hit;
+  const t = $('probe');
+  if (!hit) { t.innerHTML = '<tr><td>Move over the terrain</td><td></td></tr>'; return; }
+  ring.position.set(hit.x, hit.y + 2, hit.z);
+  const xm = hit.x + W / 2, ym = hit.z + H / 2, k = D.radius * Math.PI / 180;
+  const c = Math.round(xm / W * (cols - 1)), r = Math.round(ym / H * (rows - 1)), i = Math.min(r, rows - 1) * cols + Math.min(c, cols - 1);
+  const val = n => { const p = probes[n]; if (!p || p.a[i] === 255) return null; return p.a[i] * p.scale + p.offset; };
+  const rowsOut = [
+    ['Position', `${fmt(xm, 0)} E &middot; ${fmt(ym, 0)} S m`],
+    ['Lat, lon', `${fmt(D.lat - hit.z / k, 4)}&deg;, ${fmt(D.lon + hit.x / (k * Math.cos(D.lat * Math.PI / 180)), 4)}&deg;`],
+    ['Elevation', `${fmt(emin + hit.y / exag, 0)} m`],
+    ['Slope', `${fmt(val('slope'), 0)}&deg;`],
+    ['Ground', D.terrainNames[val('terrain_class')] ?? '-'],
+  ];
+  if (probes.cost) rowsOut.push(['Walking cost', probes.cost.a[i] === 255 ? 'blocked' : '&times;' + fmt(val('cost'))]);
+  if (probes.reachable) rowsOut.push(['From base', val('reachable') ? 'reachable' : 'cut off']);
+  if (probes.thermal_inertia) rowsOut.push(['Thermal inertia', fmt(val('thermal_inertia'), 0)]);
+  if (probes.mineral_dominant) rowsOut.push(['Mineral', (D.mineralNames[val('mineral_dominant')] || 'none').replace(/\s*\(.*\)/, '')]);
+  if (probes.science_score) rowsOut.push(['Science score', fmt(val('science_score'), 2)]);
+  t.innerHTML = rowsOut.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
+}
+function clickAt() {
+  if (!hit) return;
+  const xm = hit.x + W / 2, ym = hit.z + H / 2; let best = -1, bd = 70;
+  stops.forEach((s, i) => { const d = Math.hypot(s.x - xm, s.y - ym); if (d < bd) { bd = d; best = i; } });
+  if (best >= 0) select(best, false);
+}
+
+// ---------- panels ----------
+$('kicker').textContent = 'Mars · ' + (D.name.startsWith('gale') ? 'Gale crater' : 'survey site');
+$('title').textContent = D.name.replace(/^gale_/, '').replace(/_/g, ' ');
+$('coords').innerHTML = `${fmt(Math.abs(D.lat), 3)}&deg;${D.lat < 0 ? 'S' : 'N'} &nbsp; ${fmt(D.lon, 3)}&deg;E<br>${fmt(W / 1000, 1)} &times; ${fmt(H / 1000, 1)} km at ${D.res} m per cell`;
+$('facts').innerHTML = [['Relief', fmt(D.stats.relief, 0) + ' m'], ['Median slope', fmt(D.stats.slopeMedian, 1) + '°'],
+  ['Blocked', fmt(D.stats.blocked * 100, 1) + ' %'], ['Reachable', D.stats.reachable == null ? 'n/a' : fmt(D.stats.reachable * 100, 0) + ' %']]
+  .map(([a, b]) => `<div><small>${a}</small><span>${b}</span></div>`).join('');
+$('foot').textContent = D.source;
+
+const layers = [{id: 'photo', title: 'Photo only', group: 'Surface', kind: 'note', note: D.baseCaption}, ...D.layers];
+const texCache = {};
+let active = 'photo';
+async function setLayer(id) {
+  active = id; const L = layers.find(l => l.id === id);
+  document.querySelectorAll('.layer').forEach(e => e.classList.toggle('on', e.dataset.id === id));
+  let h = '';
+  if (L.kind === 'ramp') h = `<div class="bar" style="background:linear-gradient(90deg,${L.stops.join(',')})"></div><div class="ends"><span>${L.min}</span><em>${L.unit}</em><span>${L.max}</span></div>`;
+  if (L.kind === 'classes') h = `<div class="chips">${L.classes.map(c => `<span><i style="background:${c.color}"></i>${c.name.replace(/\s*\(.*\)/, '')}</span>`).join('')}</div>`;
+  $('legend').innerHTML = h + (L.note ? `<p class="note">${L.note}</p>` : '');
+  if (!L.tex) { uniforms.uLayer.value = blank; return; }
+  texCache[id] ??= await texture(L.tex);
+  if (active === id) uniforms.uLayer.value = texCache[id];
+}
+{ let g = '', h = '';
+  for (const L of layers) {
+    if (L.group !== g) { g = L.group; h += `<div class="group">${g}</div>`; }
+    const sw = L.kind === 'ramp' ? `linear-gradient(90deg,${L.stops.join(',')})` : L.kind === 'classes' ? `linear-gradient(90deg,${L.classes.map((c, i, a) => `${c.color} ${i / a.length * 100}% ${(i + 1) / a.length * 100}%`).join(',')})` : '';
+    h += `<div class="layer" data-id="${L.id}"><i style="background:${sw}"></i>${L.title}</div>`;
+  }
+  $('layers').innerHTML = h;
+  document.querySelectorAll('.layer').forEach(e => e.onclick = () => setLayer(e.dataset.id));
+}
+
+const toggles = {contours: ['Contours 10 m', true], hatch: ['Blocked ground', false], labels: ['Labels', true]};
+if (D.track.length) toggles.track = ['Rover track', true];
+if (D.route) toggles.route = ['EVA route', true];
+function applyToggles() {
+  uniforms.uContour.value = toggles.contours[1] ? 1 : 0; uniforms.uHatch.value = toggles.hatch[1] ? 1 : 0;
+  $('labels').style.display = toggles.labels[1] ? '' : 'none';
+  if (trackMesh) trackMesh.visible = !!(toggles.track && toggles.track[1]);
+  if (routeMesh) routeMesh.visible = !!(toggles.route && toggles.route[1]);
+  walker.visible = !!(routeMesh && routeMesh.visible);
+}
+$('toggles').innerHTML = Object.entries(toggles).map(([k, [t, on]]) => `<button data-k="${k}" class="${on ? 'on' : ''}">${t}</button>`).join('');
+document.querySelectorAll('#toggles button').forEach(b => b.onclick = () => { const t = toggles[b.dataset.k]; t[1] = !t[1]; b.classList.toggle('on', t[1]); applyToggles(); });
+
+function sun() {
+  const a = $('az').value * Math.PI / 180, e = $('al').value * Math.PI / 180;
+  uniforms.uSun.value.set(Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e));
+  $('azv').textContent = $('az').value + '°'; $('alv').textContent = $('al').value + '°';
+}
+$('az').oninput = $('al').oninput = sun;
+$('op').oninput = () => { uniforms.uOpacity.value = +$('op').value; $('opv').textContent = Math.round($('op').value * 100) + '%'; };
+$('ex').oninput = () => { exag = +$('ex').value; uniforms.uExag.value = exag; $('exv').textContent = exag.toFixed(2); ring.visible = false; layout(); };
+
+let selected = -1;
+$('stops').innerHTML = stops.map((s, i) => `<div class="stop ${s.kind}" data-i="${i}"><b>${i === 0 ? 'B' : i}</b><span>${s.name.replace(/\s*\(.*?\)/, '')}</span><small>${i === 0 ? '' : 'P' + s.priority}</small></div>`).join('');
+document.querySelectorAll('.stop').forEach(e => e.onclick = () => select(+e.dataset.i, true));
+function select(i, fly) {
+  selected = i; const s = stops[i];
+  document.querySelectorAll('.stop').forEach(e => e.classList.toggle('on', +e.dataset.i === i));
+  pins.forEach((p, n) => p.tag.classList.toggle('on', n === i));
+  const d = $('detail'); d.style.display = 'block';
+  const dist = Math.hypot(s.x - D.start[0], s.y - D.start[1]);
+  d.innerHTML = `<h3>${s.name}</h3>${s.note || ''}<table style="margin-top:6px">
+    <tr><td>Position</td><td>${fmt(s.x, 0)} E &middot; ${fmt(s.y, 0)} S m</td></tr>
+    <tr><td>Elevation</td><td>${fmt(emin + hAt(s.x - W / 2, s.y - H / 2), 0)} m</td></tr>
+    ${i ? `<tr><td>From base</td><td>${fmt(dist, 0)} m straight</td></tr><tr><td>Work time</td><td>${fmt(s.dwell, 0)} min</td></tr>` : ''}</table>
+    ${s.photo ? `<a href="${s.photo}" target="_blank" rel="noopener"><img src="${s.photo}" alt="Rover photo from this spot" loading="lazy" onerror="this.remove()"></a><p class="note">Photo taken here by Curiosity. <a href="${s.photo}" target="_blank" rel="noopener">Open full size</a></p>` : ''}`;
+  if (fly) { ease = .06; goal.x = s.x - W / 2; goal.z = s.y - H / 2; goal.r = Math.min(goal.r, Math.max(W, H) * .5); goal.el = Math.min(goal.el, .62); }
+}
+
+if (D.route) {
+  const s = D.route.summary, m = D.mission; $('planBox').style.display = '';
+  const cell = (a, b) => `<div><small>${a}</small><span>${b}</span></div>`;
+  $('plan').innerHTML = `<div class="stamp ${D.route.feasible ? 'go' : 'nogo'}">${D.route.feasible ? 'GO' : 'NO-GO'}</div>
+    <div class="plan">${cell('Distance', fmt(s.total_distance_km, 2) + ' km')}${cell('Time', fmt(s.total_time_hours, 1) + ' h')}${cell('Climb', '+' + fmt(s.total_elevation_gain_m, 0) + ' m')}
+    ${cell('Oxygen left', fmt(s.o2_remaining_pct, 0) + ' %')}${cell('Battery left', fmt(s.battery_remaining_pct, 0) + ' %')}${cell('Dose', fmt(s.total_dose_msv, 3) + ' mSv')}</div>
+    <p class="note">Visits: ${D.route.targets.join(', ') || 'none'}. Limits: ${m.evaHours} h, ${m.maxKm} km, ${m.maxDose} mSv.</p>
+    ${D.route.warnings.map(w => `<p class="warn">${w}</p>`).join('')}`;
+}
+{ const S = D.series, sol = S.sol || [];
+  const spark = (title, lines, unit) => {
+    const all = lines.flatMap(l => l.v), lo = Math.min(...all), hi = Math.max(...all), n = lines[0].v.length;
+    const X = i => 4 + i / Math.max(n - 1, 1) * 252, Y = v => 46 - (v - lo) / Math.max(hi - lo, 1e-9) * 36;
+    return `<p class="note" style="margin:8px 0 0"><b style="color:var(--ink)">${title}</b> &nbsp;${fmt(lo, lo < 10 && lo > -10 ? 2 : 0)} to ${fmt(hi, hi < 10 && hi > -10 ? 2 : 0)} ${unit}</p>
+      <svg class="spark" viewBox="0 0 260 58" preserveAspectRatio="none"><line x1="4" x2="256" y1="46" y2="46" stroke="#1f1813" stroke-width=".5"/>
+      ${lines.map(l => `<polyline fill="none" stroke="${l.c}" stroke-width="1.3" points="${l.v.map((v, i) => X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ')}"/>`).join('')}
+      <text x="4" y="56">sol ${sol[0] ?? 0}</text><text x="256" y="56" text-anchor="end">sol ${sol[sol.length - 1] ?? n - 1}</text></svg>`;
+  };
+  let h = '';
+  if (S.radiation_msv_per_sol) h += spark('Radiation', [{v: S.radiation_msv_per_sol, c: '#b3461f'}], 'mSv per sol');
+  if (S.temp_max_c && S.temp_min_c) h += spark('Air temperature', [{v: S.temp_max_c, c: '#b3461f'}, {v: S.temp_min_c, c: '#2f5f7d'}], '°C');
+  if (S.ground_temp_max_c && S.ground_temp_min_c) h += spark('Ground temperature', [{v: S.ground_temp_max_c, c: '#b3461f'}, {v: S.ground_temp_min_c, c: '#2f5f7d'}], '°C');
+  if (S.dust_opacity_tau) h += spark('Dust opacity', [{v: S.dust_opacity_tau, c: '#7d2c10'}], 'tau');
+  if (S.pressure_pa) h += spark('Pressure', [{v: S.pressure_pa, c: '#1f1813'}], 'Pa');
+  if (h) { $('condBox').style.display = ''; $('cond').innerHTML = h + '<p class="note">One value per sol for the whole site.</p>'; }
+}
+
+// ---------- go ----------
+uniforms.uBase.value = await texture(D.base);
+uniforms.uMask.value = await texture(D.mask);
+sun(); $('op').oninput(); $('exv').textContent = '1.00'; layout(); setLayer('photo');
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+const v = new THREE.Vector3(); let t0 = performance.now();
+function frame(now) {
+  placeCamera();
+  if (mouse.fresh && !drag) { mouse.fresh = false; readout(); }
+  if (routeCurve && walker.visible) {
+    const u = (((now - t0) / 42000) % 1 + 1) % 1;          // the first frame can be stamped before t0
+    walker.position.copy(routeCurve.getPointAt(u)).y += 7;
+  }
+  const scale = Math.max(.55, Math.min(2.6, cam.r / 1900));
+  pins.forEach((p, i) => {
+    p.g.scale.setScalar(scale); p.head.rotation.y = now * .0006 + i;
+    v.copy(p.g.position); v.y += 80 * scale; v.project(camera);
+    const ok = v.z < 1 && Math.abs(v.x) < 1.1 && Math.abs(v.y) < 1.1;
+    p.tag.style.display = ok ? '' : 'none';
+    if (ok) { p.tag.style.left = ((v.x + 1) / 2 * innerWidth) + 'px'; p.tag.style.top = ((1 - v.y) / 2 * innerHeight) + 'px'; }
+  });
+  ring.scale.setScalar(Math.max(.6, cam.r / 1500));
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+$('loading').classList.add('gone');
+window.__viewer = {D, cam, goal, setLayer, select, layers: layers.map(l => l.id), stops: stops.length};
+</script>
+</body>
+</html>

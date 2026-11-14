@@ -36,6 +36,56 @@ site.start, site.targets          # base and science stops, in site metres
 
 No internet? `scripts\make_stub_site.py` makes the synthetic site `data/gale_stub/` in 3 seconds.
 
+## 3D view
+
+```bash
+.venv\Scripts\python scripts\view3d.py --open
+```
+
+Builds `data/gale_boxwork/view3d.html`: one self-contained page (7.6 MB) with the terrain in
+3D and every layer draped over it. Open it in a browser, or send the file to someone.
+`scripts\view3d.py data/gale_stub` does the same for any other site folder.
+
+- Left sheet: pick a layer (photo, false colour, elevation, slope, terrain class, walking cost,
+  reachable area, minerals, thermal inertia), its legend, overlay strength, relief
+  exaggeration, sun direction, contours, blocked ground.
+- Right sheet: values under the cursor, the stops (click one to fly there; Curiosity stops
+  show the rover's photo from the spot), the EVA plan, radiation and temperature per sol.
+- Drag to orbit, right-drag to pan, wheel to zoom, `H` hides the sheets.
+
+Shown automatically when present:
+- `data/<site>/astronaut_plan.json`, the route written by the `Alg` router (distance, time,
+  oxygen, battery, dose, GO / NO-GO);
+- Curiosity's track, for regions the rover drove through.
+
+Checked through a local server (`--serve`) in a desktop browser. If opening the file by
+double-click shows a blank page in your browser, use `--serve`. The page template is
+[`mars_map/viewer/template.html`](mars_map/viewer/template.html).
+
+## Giving the real site to `Alg` and `GUI`
+
+The site is two files, `layers.npz` and `site.json` (68 MB together). `data/` is not in git,
+so there are two ways to get it:
+
+1. **Build it yourself**: the two commands in the quick start. Needs this branch's code.
+2. **Take the ready folder**: unzip `gale_boxwork_site.zip` into `data/` so that
+   `data/gale_boxwork/site.json` exists. Needs only `mars_map/site.py`, which `Alg` already
+   has, so no merge is required. The zip is made with:
+
+   ```bash
+   powershell Compress-Archive data\gale_boxwork\layers.npz,data\gale_boxwork\site.json data\gale_boxwork_site.zip
+   ```
+
+Then `Site.load("data/gale_boxwork")` works exactly like the stub.
+
+Tested against `Alg` as of commit `272afd3`, without changing its code:
+
+- **Router** (`mars_map/astronaut_router.py`): works. It planned a 3.39 km, 3.9 h walk to both
+  priority-1 Curiosity stops and flagged it NO-GO on battery (13 % left).
+- **Environment maps** (`scripts/make_env_maps.py`): **crash** with
+  `KeyError: 'dust_opacity_tau'`. Real data has no dust opacity (see the contract). `Alg`
+  needs a default there, for example `site.series.get("dust_opacity_tau")` with a fallback.
+
 ## The real site: `gale_boxwork`
 
 Centre -4.812 N, 137.383 E, 2 × 2 km at 2 m per pixel, on the flank of Mount Sharp.
