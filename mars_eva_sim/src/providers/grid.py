@@ -14,6 +14,7 @@ import numpy as np
 from ..core.exceptions import TerrainValidationError
 from ..core.schemas import Cell
 from .interfaces import NEIGHBOR_OFFSETS, BoolGrid, FloatGrid
+from .obstacles import default_obstacle_height_m
 
 
 def slope_from_elevation(elevation: FloatGrid, cell_size_m: float) -> FloatGrid:
@@ -28,7 +29,8 @@ class GridTerrain:
 
     Only ``elevation`` and ``cell_size_m`` are required. Missing layers take neutral
     defaults (firm ground, no rocks, everything passable, nothing forbidden, no
-    shelter) and ``slope`` is derived from the elevation.
+    shelter), ``slope`` is derived from the elevation and ``obstacle_height_m``
+    from ``rock_hazard`` and the micro-relief (see ``obstacles``).
 
     Raises:
         TerrainValidationError: from ``__post_init__`` when the layers are inconsistent.
@@ -42,6 +44,7 @@ class GridTerrain:
     passable_walk: BoolGrid | None = None
     forbidden: BoolGrid | None = None
     is_shelter: BoolGrid | None = None
+    obstacle_height_m: FloatGrid | None = None
 
     def __post_init__(self) -> None:
         self.elevation = np.asarray(self.elevation, dtype=np.float64)
@@ -58,6 +61,10 @@ class GridTerrain:
         self.passable_walk = self._bool_layer(self.passable_walk, True, shape)
         self.forbidden = self._bool_layer(self.forbidden, False, shape)
         self.is_shelter = self._bool_layer(self.is_shelter, False, shape)
+        if self.obstacle_height_m is None and self.rock_hazard.shape == shape:
+            self.obstacle_height_m = default_obstacle_height_m(
+                self.elevation, self.cell_size_m, np.clip(self.rock_hazard, 0.0, 1.0))
+        self.obstacle_height_m = self._float_layer(self.obstacle_height_m, 0.0, shape)
         self.validate()
 
     @staticmethod
@@ -113,12 +120,13 @@ class GridTerrain:
         shape = self.elevation.shape
         layers = {"slope": self.slope, "walk_eta": self.walk_eta,
                   "rock_hazard": self.rock_hazard, "passable_walk": self.passable_walk,
-                  "forbidden": self.forbidden, "is_shelter": self.is_shelter}
+                  "forbidden": self.forbidden, "is_shelter": self.is_shelter,
+                  "obstacle_height_m": self.obstacle_height_m}
         for name, layer in layers.items():
             if layer is None or layer.shape != shape:
                 got = None if layer is None else layer.shape
                 raise TerrainValidationError(f"layer '{name}' has shape {got}, expected {shape}")
-        for name in ("elevation", "slope", "walk_eta", "rock_hazard"):
+        for name in ("elevation", "slope", "walk_eta", "rock_hazard", "obstacle_height_m"):
             if not np.all(np.isfinite(getattr(self, name))):
                 raise TerrainValidationError(f"layer '{name}' contains NaN or infinity")
         assert self.slope is not None and self.walk_eta is not None and self.rock_hazard is not None
@@ -128,3 +136,6 @@ class GridTerrain:
             raise TerrainValidationError("walk_eta must be >= 1.0 (1.0 = firm level ground)")
         if np.any(self.rock_hazard < 0.0) or np.any(self.rock_hazard > 1.0):
             raise TerrainValidationError("rock_hazard must be in [0, 1]")
+        assert self.obstacle_height_m is not None
+        if np.any(self.obstacle_height_m < 0.0):
+            raise TerrainValidationError("obstacle_height_m must be non-negative")

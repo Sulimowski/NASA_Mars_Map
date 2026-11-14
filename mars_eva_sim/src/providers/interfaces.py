@@ -44,6 +44,7 @@ class TerrainProvider(Protocol):
         passable_walk   bool, False where a suited astronaut cannot walk
         forbidden       bool, True where entry is not allowed (no-go, planetary protection)
         is_shelter      bool, True for the habitat and any other safe haven
+        obstacle_height_m   m, height of the rocks and steps a vehicle must clear
     """
 
     @property
@@ -72,6 +73,9 @@ class TerrainProvider(Protocol):
 
     @property
     def is_shelter(self) -> BoolGrid: ...
+
+    @property
+    def obstacle_height_m(self) -> FloatGrid: ...
 
     def in_bounds(self, cell: Cell) -> bool:
         """True when the cell lies inside the grid."""

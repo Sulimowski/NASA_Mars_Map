@@ -101,10 +101,11 @@ def rasterize_nogo(
     return mask
 
 
-def bekker_sinkage_cm(thermal_inertia: np.ndarray, sand: np.ndarray,
-                      suit: SuitParams = SuitParams(),
-                      sand_fraction: np.ndarray | None = None) -> np.ndarray:
-    """Static boot sinkage in centimetres from the Bekker-Wong pressure-sinkage law.
+def soil_moduli(thermal_inertia: np.ndarray, sand: np.ndarray,
+                sand_fraction: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Bekker-Wong soil parameters (k_phi in kN/m^(n+2), exponent n) from thermal inertia.
+
+    Shared by the boot model here and the wheel model in rover.py.
 
     `sand_fraction` (0..1, from the HiRISE sand map) softens the ground gradually:
     a cell that is half sand is at most half as firm as THEMIS says.
@@ -115,7 +116,14 @@ def bekker_sinkage_cm(thermal_inertia: np.ndarray, sand: np.ndarray,
         firmness = np.minimum(firmness, 1.0 - 0.9 * f)
     firmness = np.where(sand, np.minimum(firmness, 0.1), firmness)    # mapped sand is never firm
     k_phi = np.exp(np.log(K_PHI_LOOSE) + firmness * (np.log(K_PHI_FIRM) - np.log(K_PHI_LOOSE)))
-    n = N_LOOSE + firmness * (N_FIRM - N_LOOSE)
+    return k_phi, N_LOOSE + firmness * (N_FIRM - N_LOOSE)
+
+
+def bekker_sinkage_cm(thermal_inertia: np.ndarray, sand: np.ndarray,
+                      suit: SuitParams = SuitParams(),
+                      sand_fraction: np.ndarray | None = None) -> np.ndarray:
+    """Static boot sinkage in centimetres from the Bekker-Wong pressure-sinkage law."""
+    k_phi, n = soil_moduli(thermal_inertia, sand, sand_fraction)
     pressure_kpa = suit.total_mass_kg * MARS_GRAVITY / suit.boot_area_m2 / 1000.0
     z_m = (pressure_kpa / (K_C / suit.boot_width_m + k_phi)) ** (1.0 / n)
     return (z_m * 100.0).astype(np.float32)

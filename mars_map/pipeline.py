@@ -39,13 +39,15 @@ if __package__ in (None, ""):
     import mars_map  # noqa: F401  (run directly, e.g. PyCharm Run: make relative imports work)
     __package__ = "mars_map"
 
+from mars_eva_sim.src.core.config import DEFAULT_CONFIG
 from mars_eva_sim.src.core.constants import SOL_S
 from mars_eva_sim.src.integration.router_bridge import PlanChecker, sol_assessment
 
-from .astronaut_router import STRATEGIES, EvaRouter, MissionPlan, ShelterRoute
+from .astronaut_router import EvaRouter, MissionPlan, ShelterRoute
 from .astronaut_terrain import build_astronaut_terrain, uniform_dose_rate_msv_h
 from .biomechanics import SuitParams
 from .environment import Environment
+from .rover import RoverParams, build_rover_terrain, regeneration_gain
 from .site import TERRAIN_CLASSES, Site, resolve_path
 
 SCHEMA = "eva-plan/1"
@@ -62,6 +64,7 @@ class EvaConditions:
     dose_rate_msv_h: np.ndarray            # mSv per Earth hour, site.shape
     ground_temp_c: np.ndarray | None       # degrees C, site.shape
     radiation_source: str                  # "environment" (map) or "series" (uniform)
+    sun_w_m2: np.ndarray | None = None     # direct sunlight on the ground at ltst_h, W/m^2
 
     def summary(self) -> dict:
         def stats(a, digits):
@@ -75,6 +78,7 @@ class EvaConditions:
             "radiation_source": self.radiation_source,
             "dose_rate_usv_h": stats(self.dose_rate_msv_h * 1000.0, 2),
             "ground_temp_c": None if self.ground_temp_c is None else stats(self.ground_temp_c, 1),
+            "direct_sun_w_m2": None if self.sun_w_m2 is None else stats(self.sun_w_m2, 0),
         }
 
 
@@ -102,7 +106,8 @@ def build_conditions(site: Site, env: Environment | None = None, sol: int | None
         dust_tau=env.dust_tau(sol) if "dust_opacity_tau" in site.series else None,
         dose_rate_msv_h=env.dose_rate(sol) / np.float32(1000.0),      # the map is in uSv/h
         ground_temp_c=env.temperature(sol, ltst_h) if env.has_temperature else None,
-        radiation_source="environment")
+        radiation_source="environment",
+        sun_w_m2=env.direct_sunlight(sol, ltst_h))
 
 
 @dataclass
@@ -165,7 +170,8 @@ class EvaPlanSet:
             },
             "conditions": {**self.conditions.summary(), "sol_assessment": self.sol_assessment},
             "mission": asdict(m),
-            "suit": asdict(self.router.suit),
+            "vehicle": self.router.mover.kind,
+            "suit": asdict(self.router.suit),          # for a rover: its RoverParams
             "strategies": plans,
             "comparison": [
                 {"strategy": name, "title": p.title, "feasible": p.feasible,
@@ -174,6 +180,7 @@ class EvaPlanSet:
                  "dose_msv": round(p.total_dose_msv, 3),
                  "o2_used_l": round(p.total_o2_liters, 1),
                  "energy_used_wh": round(p.total_energy_wh, 1),
+                 "battery_remaining_pct": round(p.battery_remaining_pct, 1),
                  "science_value": round(p.science_value, 2)}
                 for name, p in self.plans.items()],
             "timings_s": {k: round(v, 3) for k, v in self.timings_s.items()},
@@ -190,7 +197,8 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
               env: Environment | None = None, use_environment: bool = True,
               suit: SuitParams | None = None, strategies: list[str] | None = None,
               check_radio: bool = True, shelters: bool = False,
-              check_physiology: bool = True) -> EvaPlanSet:
+              check_physiology: bool = True, vehicle: str = "astronaut",
+              rover: RoverParams | None = None) -> EvaPlanSet:
     """Plan the EVA of a site for one sol.
 
     sol       -- a sol of site.series (default: the first one).
@@ -199,7 +207,14 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     use_environment=False -- skip the terrain-following maps: uniform radiation, no temperature.
     shelters  -- also precompute an escape route from every stop of every plan.
     check_physiology -- walk every plan through the astronaut simulator (a few seconds).
+    vehicle   -- "astronaut" (on foot) or "rover" (wheels, battery, solar panels,
+                 regenerative braking; see rover.py). `rover` sets the rover's parameters.
     """
+    if vehicle not in ("astronaut", "rover"):
+        raise ValueError(f"unknown vehicle '{vehicle}', expected 'astronaut' or 'rover'")
+    if vehicle == "rover":
+        return _plan_site_rover(site, sol, ltst_h, env, use_environment, rover or RoverParams(),
+                                strategies, check_radio)
     timings: dict[str, float] = {}
     clock = time.perf_counter
 
@@ -223,7 +238,7 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     timings["router"] = clock() - t
 
     plans: dict[str, MissionPlan] = {}
-    for name in strategies or list(STRATEGIES):
+    for name in strategies or list(router.mover.strategies):
         t = clock()
         plans[name] = router.plan(name, check_radio=check_radio)
         timings[f"plan_{name}"] = clock() - t
@@ -253,6 +268,48 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     timings["planning_total"] = sum(v for k, v in timings.items()
                                     if not k.startswith("environment"))
     return result
+
+
+def _plan_site_rover(site: Site, sol, ltst_h: float, env: Environment | None,
+                     use_environment: bool, rover: RoverParams, strategies, check_radio: bool
+                     ) -> EvaPlanSet:
+    """plan_site for a rover: the same stages with the wheel model, no physiology check.
+
+    The panels are fed by the direct-sunlight map at ltst_h, so without an Environment
+    the rover has no solar input.
+    """
+    timings: dict[str, float] = {}
+    clock = time.perf_counter
+
+    t = clock()
+    if env is None and use_environment:
+        env = Environment(site)
+    timings["environment_build"] = clock() - t
+
+    t = clock()
+    conditions = build_conditions(site, env, sol, ltst_h)
+    timings["environment_maps"] = clock() - t
+
+    t = clock()
+    terrain = build_rover_terrain(site, rover, dose_rate_msv_h=conditions.dose_rate_msv_h,
+                                  ground_temp_c=conditions.ground_temp_c,
+                                  sun_w_m2=conditions.sun_w_m2)
+    router = EvaRouter(site, terrain, rover)
+    timings["terrain_and_router"] = clock() - t
+
+    plans: dict[str, MissionPlan] = {}
+    for name in strategies or list(rover.strategies):
+        t = clock()
+        plan = router.plan(name, check_radio=check_radio)
+        if plan.segments and rover.regen_enabled:
+            plan.energy["regeneration"] = regeneration_gain(router, plan)
+        plans[name] = plan
+        timings[f"plan_{name}"] = clock() - t
+
+    timings["planning_total"] = sum(v for k, v in timings.items()
+                                    if not k.startswith("environment"))
+    return EvaPlanSet(site, conditions, router, plans, timings,
+                      sol_assessment=sol_assessment(site, conditions.sol, DEFAULT_CONFIG))
 
 
 # ----------------------------------------------------------------------------
@@ -296,13 +353,18 @@ def render(result: EvaPlanSet, out_path: str | Path, shelter_from: tuple[float, 
                         textcoords="offset points", fontsize=7, color="k",
                         bbox=dict(fc="white", ec="none", alpha=0.6, pad=0.5))
 
-    base(axes[0, 0], router.terrain.looseness, "Soil looseness and the three routes", "YlOrBr",
+    base(axes[0, 0], router.terrain.looseness, "Soil looseness and the routes", "YlOrBr",
          vmin=0, vmax=1)
     routes(axes[0, 0])
     axes[0, 0].legend(loc="lower left", fontsize=9)
 
-    rate = result.conditions.dose_rate_msv_h * 1000.0
-    base(axes[0, 1], rate, "Dose rate, µSv/h, and an escape route to shelter", "inferno")
+    is_rover = router.mover.kind == "rover"
+    if is_rover:
+        base(axes[0, 1], -router.terrain.heater_w, "Solar power of the panels, W "
+             f"(direct light at {result.conditions.ltst_h:g} h local time)", "cividis")
+    else:
+        rate = result.conditions.dose_rate_msv_h * 1000.0
+        base(axes[0, 1], rate, "Dose rate, µSv/h, and an escape route to shelter", "inferno")
     routes(axes[0, 1], lw=1.2)
     if shelter_from is not None:
         esc = result.shelter(shelter_from)
@@ -324,23 +386,41 @@ def render(result: EvaPlanSet, out_path: str | Path, shelter_from: tuple[float, 
                             mec="k", ms=9)
 
     ax = axes[1, 1]
-    for name, plan in result.plans.items():
-        pts = plan.waypoints(step_m=4.0)
-        ax.plot([p["t_min"] / 60 for p in pts], [p["elev_m"] for p in pts],
-                color=COLORS.get(name, "gray"), lw=2,
-                label=f"{name}: {len(plan.visited_targets)} targets, {plan.total_time_hours:.2f} h, "
-                      f"{plan.total_distance_km:.2f} km, {plan.total_dose_msv * 1000:.0f} µSv, "
-                      f"O2 {plan.o2_remaining_pct:.0f}% left")
-    usable = site.mission.eva_max_hours * (1 - site.mission.return_reserve_frac)
-    ax.axvline(usable, color="red", ls="--", lw=1)
-    ax.text(usable, ax.get_ylim()[0], " usable EVA time", color="red", fontsize=8, va="bottom")
+    usable = router.budgets(1.0)[0] / 3600.0
+    if is_rover:
+        # Battery charge along the plan; the elevation behind it shows where it is spent
+        # (climbs) and where it comes back (descents, sunlit stops).
+        relief = ax.twinx()
+        for name, plan in result.plans.items():
+            pts = plan.waypoints(step_m=4.0)
+            hours = [p["t_min"] / 60 for p in pts]
+            relief.plot(hours, [p["elev_m"] for p in pts], color="0.6", lw=1)
+            e = plan.energy
+            ax.plot(hours, [p["battery_pct"] for p in pts], color=COLORS.get(name, "gray"), lw=2,
+                    label=f"{name}: {len(plan.visited_targets)} targets, {plan.total_time_hours:.2f} h, "
+                          f"{plan.total_distance_km:.2f} km, regen {e.get('regenerated_wh', 0):.0f} Wh, "
+                          f"solar {e.get('solar_wh', 0):.0f} Wh, battery {plan.battery_remaining_pct:.0f}%")
+        relief.set_ylabel("Elevation, m (grey)")
+        ax.axhline(100.0 * router.mover.battery_reserve_frac, color="red", ls="--", lw=1)
+        ax.set_ylabel("Battery charge, %")
+        ax.set_title("Battery charge along each plan (red = reserve)")
+    else:
+        for name, plan in result.plans.items():
+            pts = plan.waypoints(step_m=4.0)
+            ax.plot([p["t_min"] / 60 for p in pts], [p["elev_m"] for p in pts],
+                    color=COLORS.get(name, "gray"), lw=2,
+                    label=f"{name}: {len(plan.visited_targets)} targets, {plan.total_time_hours:.2f} h, "
+                          f"{plan.total_distance_km:.2f} km, {plan.total_dose_msv * 1000:.0f} µSv, "
+                          f"O2 {plan.o2_remaining_pct:.0f}% left")
+        ax.axvline(usable, color="red", ls="--", lw=1)
+        ax.text(usable, ax.get_ylim()[0], " usable EVA time", color="red", fontsize=8, va="bottom")
+        ax.set_ylabel("Elevation, m")
+        ax.set_title("Elevation along each plan")
     ax.set_xlabel("Time since start, h (flat pieces = work at a target)")
-    ax.set_ylabel("Elevation, m")
-    ax.set_title("Elevation along each plan")
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="lower left" if is_rover else "upper left", fontsize=8)
 
     c = result.conditions
-    fig.suptitle(f"{site.name} — EVA plans for sol {c.sol}"
+    fig.suptitle(f"{site.name} — {'rover' if is_rover else 'EVA'} plans for sol {c.sol}"
                  f"{'  (SOLAR PARTICLE EVENT)' if c.particle_event else ''}  |  "
                  f"radiation: {c.radiation_source}  |  planned in "
                  f"{result.timings_s.get('planning_total', 0):.2f} s", fontsize=13)
@@ -360,8 +440,18 @@ def print_report(result: EvaPlanSet) -> None:
         print(f"  цели: {p.visited_targets or '—'}")
         print(f"  {p.total_distance_km:.2f} км, {p.total_time_hours:.2f} ч, набор +{p.total_elevation_gain_m:.0f} м, "
               f"макс. уклон {p.max_slope_deg:.1f}°")
-        print(f"  O2 осталось {p.o2_remaining_pct:.0f}%, батарея {p.battery_remaining_pct:.0f}%, "
-              f"доза {p.total_dose_msv * 1000:.1f} мкЗв, научная ценность {p.science_value:.1f}")
+        if p.vehicle == "rover":
+            e, r = p.energy, p.energy.get("regeneration", {})
+            print(f"  батарея: {e.get('end_charge_pct', 100):.0f}% в конце, минимум "
+                  f"{e.get('min_charge_pct', 100):.0f}%; научная ценность {p.science_value:.1f}")
+            print(f"  энергия, Вт·ч: движение {e.get('drive_wh', 0):.0f}, бортовые системы "
+                  f"{e.get('hotel_wh', 0):.0f}, солнце +{e.get('solar_wh', 0):.0f}, рекуперация "
+                  f"+{e.get('regenerated_wh', 0):.1f} (экономит {r.get('saved_pct', 0):.1f}% "
+                  f"расхода в движении), потеряно при полной батарее "
+                  f"{e.get('lost_full_battery_wh', 0):.1f}")
+        else:
+            print(f"  O2 осталось {p.o2_remaining_pct:.0f}%, батарея {p.battery_remaining_pct:.0f}%, "
+                  f"доза {p.total_dose_msv * 1000:.1f} мкЗв, научная ценность {p.science_value:.1f}")
         for s in p.skipped_targets:
             print(f"  пропущена: {s['name']} (P{s['priority']}) — {s['reason']}")
         for wmsg in p.warnings:
@@ -392,6 +482,10 @@ def main() -> None:
                     help="uniform radiation, no temperature (faster start)")
     ap.add_argument("--shelters", action="store_true", help="precompute escape routes from every stop")
     ap.add_argument("--out", default=None, help="output folder (default: the site folder)")
+    ap.add_argument("--vehicle", choices=("astronaut", "rover"), default="astronaut",
+                    help="who travels: an astronaut on foot or a rover")
+    ap.add_argument("--no-regen", action="store_true",
+                    help="rover: switch regenerative braking off, to compare")
     args = ap.parse_args()
 
     if args.site is None:
@@ -402,6 +496,15 @@ def main() -> None:
         site = Site.load(folder)
     out = resolve_path(args.out) if args.out else folder
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.vehicle == "rover":
+        result = plan_site(site, sol=args.sol, ltst_h=args.ltst, vehicle="rover",
+                           use_environment=not args.no_environment,
+                           rover=RoverParams(regen_enabled=not args.no_regen))
+        print_report(result)
+        print(f"json    {result.to_json(out / 'rover_plans.json')}")
+        print(f"preview {render(result, out / 'rover_plans.png')}")
+        return
 
     result = plan_site(site, sol=args.sol, ltst_h=args.ltst,
                        use_environment=not args.no_environment, shelters=args.shelters)

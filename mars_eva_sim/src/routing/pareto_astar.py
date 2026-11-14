@@ -1,22 +1,23 @@
 """B3: resource-constrained route search, A* with Pareto labels.
 
 A plain shortest-path search keeps one best cost per cell. That is wrong here:
-the cheapest way to reach a cell may have used more oxygen than a slightly longer
-one, and only the second can still get home. So each cell keeps up to ``K`` labels
-that do not dominate one another.
+the cheapest way to reach a cell may have used more of a resource than a slightly
+longer one, and only the second can still finish. So each cell keeps up to ``K``
+labels that do not dominate one another.
 
-    label   position, time, every consumable, fatigue, dose, stored heat, risk, cost
-    order   priority = cost + heuristic,  heuristic = w_t * straight distance / V_pref
-    prune   the eight rules of ``ConstraintChecker``
+    label       position, time, the traveller's resources and risks, cost
+    order       priority = cost + heuristic,  heuristic = w_t * straight distance / V_max
+    prune       the rules of the traveller's constraint checker
     dominance   Y dominates X when Y is no worse in cost and in every state variable
-    trim    more than K labels in a cell: the most expensive one is dropped
+    trim        more than K labels in a cell: the most expensive one is dropped
+
+The search does not know who travels. Moves, stays in place (an astronaut
+resting, a rover recharging), dominance and the constraints all come from the
+``TraversalModel`` and ``Constraints`` it is given (see ``agent``).
 
 The heuristic is admissible because every cost term is non-negative and no step
-is faster than the preferred speed. With ``K`` finite the search is a heuristic:
-it can miss a feasible route whose label was trimmed.
-
-A crew member whose fatigue is above the rest trigger may also rest in place,
-which is how a route gets past the fatigue rule.
+is faster than the model's top speed. With ``K`` finite the search is a
+heuristic: it can miss a feasible route whose label was trimmed.
 
 Every rejected state is counted per rule, together with the farthest distance
 reached before the rule fired. When no route exists, the rule that fired most
@@ -29,11 +30,15 @@ import heapq
 import itertools
 import math
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Generic
 
-from ..core.config import RoutingConfig
-from ..core.schemas import Cell, Label, Pace, PruneRule, TaskType
-from .constraints import ConstraintChecker
-from .transition import EdgeEvaluator
+from ..core.schemas import Cell, PruneRule
+from .agent import Constraints, L, TraversalModel
+from .transition import dominates
+
+__all__ = ["ParetoAStar", "SearchDiagnostics", "SearchResult", "dominates", "path_of",
+           "describe_astronaut_rule"]
 
 _BOTTLENECK_TEXT: dict[PruneRule, str] = {
     PruneRule.RESOURCE_RESERVE: "{detail} reserve reached after {km:.1f} km",
@@ -48,6 +53,14 @@ _BOTTLENECK_TEXT: dict[PruneRule, str] = {
 }
 
 
+def describe_astronaut_rule(rule: Enum, detail: str, distance_km: float) -> str:
+    """Readable sentence for an astronaut constraint that blocked the search."""
+    template = _BOTTLENECK_TEXT.get(rule)  # type: ignore[call-overload]
+    if template is None:
+        return f"{rule.value} ({detail}) after {distance_km:.1f} km"
+    return template.format(detail=detail, km=distance_km)
+
+
 @dataclass(slots=True)
 class SearchDiagnostics:
     """Telemetry of one search.
@@ -55,13 +68,14 @@ class SearchDiagnostics:
     Attributes:
         expanded: labels taken from the queue and expanded.
         generated: labels created.
-        infeasible_edges: moves rejected by the edge physics (terrain or power).
+        infeasible_edges: moves rejected by the physics (terrain, power, vehicle limits).
         dominated: labels discarded because another label was no worse in everything.
         trimmed: labels discarded because a cell already held K cheaper ones.
         prune_counts: how often each constraint rejected a label.
-        prune_max_distance_m: farthest distance walked by a label rejected by each rule.
+        prune_max_distance_m: farthest distance travelled by a label rejected by each rule.
         prune_details: per rule, how often each detail (for example the resource) occurred.
         budget_exhausted: the search stopped at ``max_expansions``.
+        describe: turns a rule into a sentence; supplied by the constraint checker.
     """
 
     expanded: int = 0
@@ -69,12 +83,13 @@ class SearchDiagnostics:
     infeasible_edges: int = 0
     dominated: int = 0
     trimmed: int = 0
-    prune_counts: dict[PruneRule, int] = field(default_factory=dict)
-    prune_max_distance_m: dict[PruneRule, float] = field(default_factory=dict)
-    prune_details: dict[PruneRule, dict[str, int]] = field(default_factory=dict)
+    prune_counts: dict[Any, int] = field(default_factory=dict)
+    prune_max_distance_m: dict[Any, float] = field(default_factory=dict)
+    prune_details: dict[Any, dict[str, int]] = field(default_factory=dict)
     budget_exhausted: bool = False
+    describe: Callable[[Enum, str, float], str] = describe_astronaut_rule
 
-    def record(self, rule: PruneRule, detail: str, distance_m: float) -> None:
+    def record(self, rule: Enum, detail: str, distance_m: float) -> None:
         """Count one rejection by ``rule``."""
         self.prune_counts[rule] = self.prune_counts.get(rule, 0) + 1
         if distance_m > self.prune_max_distance_m.get(rule, -1.0):
@@ -82,7 +97,7 @@ class SearchDiagnostics:
         details = self.prune_details.setdefault(rule, {})
         details[detail] = details.get(detail, 0) + 1
 
-    def bottleneck(self) -> tuple[PruneRule | None, str]:
+    def bottleneck(self) -> tuple[Any, str]:
         """The constraint that blocked the search most often, with a readable message.
 
         Returns:
@@ -95,7 +110,7 @@ class SearchDiagnostics:
             details = self.prune_details.get(rule, {})
             detail = max(details, key=lambda d: details[d]) if details else ""
             km = self.prune_max_distance_m.get(rule, 0.0) / 1000.0
-            return rule, _BOTTLENECK_TEXT[rule].format(detail=detail, km=km)
+            return rule, self.describe(rule, detail, km)
         if self.budget_exhausted:
             return None, "search budget exhausted before the goal was reached"
         if self.infeasible_edges:
@@ -104,50 +119,28 @@ class SearchDiagnostics:
 
 
 @dataclass(slots=True)
-class SearchResult:
+class SearchResult(Generic[L]):
     """Outcome of a route search.
 
     Attributes:
         found: a feasible route exists.
         goal_label: final state at the goal (``None`` when not found).
-        path: cells of the route in travel order, rests collapsed (empty when not found).
+        path: cells of the route in travel order, stays in place collapsed.
         diagnostics: telemetry of the search.
         message: "ok" or the bottleneck description.
         bottleneck: the blocking constraint when not found.
     """
 
     found: bool
-    goal_label: Label | None
+    goal_label: L | None
     path: list[Cell]
     diagnostics: SearchDiagnostics
     message: str
-    bottleneck: PruneRule | None = None
+    bottleneck: Any = None
 
 
-def dominates(y: Label, x: Label, tol: float) -> bool:
-    """True when ``y`` is at least as good as ``x`` in cost and every state variable.
-
-    ``tol`` is a relative tolerance: two paths of equal length that differ only by
-    floating-point noise then dominate each other, instead of both being kept.
-    """
-    up, down = 1.0 + tol, 1.0 - tol
-    return (y.cost <= x.cost * up + tol
-            and y.o2_kg >= x.o2_kg * down - tol
-            and y.eva_remaining_s >= x.eva_remaining_s * down - tol
-            and y.battery_j >= x.battery_j * down - tol
-            and y.co2_capacity_kg >= x.co2_capacity_kg * down - tol
-            and y.cooling_water_kg >= x.cooling_water_kg * down - tol
-            and y.fatigue <= x.fatigue * up + tol
-            and y.dose_sv <= x.dose_sv * up + tol
-            and abs(y.heat_storage_j) <= abs(x.heat_storage_j) * up + tol
-            and y.risk <= x.risk * up + tol
-            and y.hand_fatigue <= x.hand_fatigue * up + tol
-            and y.hydration_deficit_kg <= x.hydration_deficit_kg * up + tol
-            and y.t_s <= x.t_s * up + tol)
-
-
-def path_of(label: Label) -> list[Cell]:
-    """Cells visited on the way to ``label``, consecutive repeats (rests, tasks) collapsed."""
+def path_of(label: Any) -> list[Cell]:
+    """Cells visited on the way to ``label``, consecutive repeats (stays in place) collapsed."""
     cells: list[Cell] = []
     for node in label.chain():
         if not cells or cells[-1] != node.cell:
@@ -155,18 +148,20 @@ def path_of(label: Label) -> list[Cell]:
     return cells
 
 
-class ParetoAStar:
-    """Pareto-label A* over the 8-connected grid."""
+class ParetoAStar(Generic[L]):
+    """Pareto-label A* over the 8-connected grid, for any traveller."""
 
-    def __init__(self, evaluator: EdgeEvaluator, checker: ConstraintChecker) -> None:
-        self._evaluator = evaluator
+    def __init__(self, model: TraversalModel[L], checker: Constraints[L]) -> None:
+        """
+        Args:
+            model: physics of the traveller (an astronaut's or a rover's evaluator).
+            checker: the traveller's hard constraints.
+        """
+        self._model = model
         self._checker = checker
-        self._cfg: RoutingConfig = evaluator.config.routing
-        self._rest_trigger = evaluator.config.fatigue.rest_trigger
-        self._rest_duration = evaluator.config.fatigue.rest_duration_s
-        self._v_max = evaluator.astronaut.preferred_speed_m_s
+        self._cfg = model.config.routing
 
-    def search(self, start: Label, goal: Cell) -> SearchResult:
+    def search(self, start: L, goal: Cell) -> SearchResult[L]:
         """Cheapest feasible route from the start label to ``goal``.
 
         Never raises for an unreachable goal: the result then has ``found=False``
@@ -175,23 +170,23 @@ class ParetoAStar:
         Raises:
             TerrainValidationError: the goal lies outside the grid.
         """
-        if not self._evaluator.in_bounds(goal):
-            self._evaluator.require_walkable(goal, "goal")
+        if not self._model.in_bounds(goal):
+            self._model.require_walkable(goal, "goal")
         goal_label, _, diagnostics = self._run(start, goal, self._cfg.max_labels_per_cell)
         if goal_label is not None:
             return SearchResult(True, goal_label, path_of(goal_label), diagnostics, "ok")
         rule, message = diagnostics.bottleneck()
         return SearchResult(False, None, [], diagnostics, message, rule)
 
-    def explore(self, start: Label, max_labels_per_cell: int = 1
-                ) -> tuple[dict[Cell, Label], SearchDiagnostics]:
+    def explore(self, start: L, max_labels_per_cell: int = 1
+                ) -> tuple[dict[Cell, L], SearchDiagnostics]:
         """Cheapest feasible label for every cell reachable from the start (no goal).
 
         Returns:
             ``(best label per reachable cell, diagnostics)``.
         """
         _, labels, diagnostics = self._run(start, None, max_labels_per_cell)
-        best: dict[Cell, Label] = {}
+        best: dict[Cell, L] = {}
         for cell, bucket in labels.items():
             alive = [label for label in bucket if label.alive]
             if alive:
@@ -199,11 +194,11 @@ class ParetoAStar:
         return best, diagnostics
 
     # ---- core loop ------------------------------------------------------
-    def _run(self, start: Label, goal: Cell | None, k: int
-             ) -> tuple[Label | None, dict[Cell, list[Label]], SearchDiagnostics]:
-        evaluator, checker, cfg = self._evaluator, self._checker, self._cfg
-        diagnostics = SearchDiagnostics()
-        labels: dict[Cell, list[Label]] = {}
+    def _run(self, start: L, goal: Cell | None, k: int
+             ) -> tuple[L | None, dict[Cell, list[L]], SearchDiagnostics]:
+        model, checker, cfg = self._model, self._checker, self._cfg
+        diagnostics = SearchDiagnostics(describe=checker.describe)
+        labels: dict[Cell, list[L]] = {}
         start_violation = checker.violated(start)
         if start_violation is not None:
             diagnostics.record(start_violation[0], start_violation[1], start.distance_m)
@@ -213,7 +208,7 @@ class ParetoAStar:
             def heuristic(row: int, col: int) -> float:
                 return 0.0
         else:
-            scale = cfg.weight_time_per_s * evaluator.cell_size_m / self._v_max
+            scale = model.time_weight_per_s * model.cell_size_m / model.max_speed_m_s
             goal_row, goal_col = goal
 
             def heuristic(row: int, col: int) -> float:
@@ -221,7 +216,7 @@ class ParetoAStar:
 
         counter = itertools.count()
         labels[start.cell] = [start]
-        heap: list[tuple[float, int, Label]] = [
+        heap: list[tuple[float, int, L]] = [
             (start.cost + heuristic(start.row, start.col), next(counter), start)]
         tol = cfg.dominance_tolerance
 
@@ -237,17 +232,8 @@ class ParetoAStar:
                 diagnostics.budget_exhausted = True
                 break
 
-            candidates: list[tuple[Cell, Label]] = []
-            for nb, dist in evaluator.neighbors(cell):
-                tr = evaluator.walk_edge(cell, nb, dist, label, Pace.NOMINAL)
-                if tr is None:
-                    diagnostics.infeasible_edges += 1
-                    continue
-                candidates.append((nb, evaluator.advance(label, nb, tr, "walk")))
-            if label.fatigue > self._rest_trigger:
-                rest = evaluator.stationary(cell, label, self._rest_duration, TaskType.REST)
-                candidates.append((cell, evaluator.advance(label, cell, rest, "rest")))
-
+            candidates, refused = model.successors(label)
+            diagnostics.infeasible_edges += refused
             for nb, new in candidates:
                 diagnostics.generated += 1
                 violation = checker.violated(new, cell)
@@ -260,17 +246,17 @@ class ParetoAStar:
                                           next(counter), new))
         return None, labels, diagnostics
 
-    @staticmethod
-    def _insert(bucket: list[Label], new: Label, k: int, tol: float,
+    def _insert(self, bucket: list[L], new: L, k: int, tol: float,
                 diagnostics: SearchDiagnostics) -> bool:
         """Add ``new`` to the Pareto set of its cell. False when it is not kept."""
+        dominates_fn = self._model.dominates
         for old in bucket:
-            if dominates(old, new, tol):
+            if dominates_fn(old, new, tol):
                 diagnostics.dominated += 1
                 return False
-        kept: list[Label] = []
+        kept: list[L] = []
         for old in bucket:
-            if dominates(new, old, tol):
+            if dominates_fn(new, old, tol):
                 old.alive = False
                 diagnostics.dominated += 1
             else:

@@ -312,6 +312,78 @@ class RouteAdapterConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ObstacleConfig:
+    """Height of the obstacles a vehicle meets in a cell, from rocks and micro-relief.
+
+    Rocks follow the size-frequency model of Golombek and Rapp (1997): the share of
+    the surface covered by rocks of diameter D or larger is ``k * exp(-q(k) * D)``
+    with ``q(k) = q_intercept + q_slope / k`` for a total rock abundance ``k``.
+    """
+
+    rock_q_intercept: float = 1.79
+    rock_q_slope: float = 0.152
+    hazard_area_fraction: float = 0.01          # obstacles are the rocks covering this share
+    rock_height_to_diameter: float = 0.5        # a rock stands about half its diameter high
+    hazard_to_abundance: float = 0.4            # rock abundance assumed at rock_hazard = 1
+    relief_window_cells: int = 1                # half-width of the detrending window
+    relief_amplitude_factor: float = 2.0        # step height = factor * |residual|
+    relief_max_cell_m: float = 3.0              # coarser grids resolve hills, not steps
+
+
+@dataclass(frozen=True, slots=True)
+class RoverConfig:
+    """Rover mobility, power and radiation (algorithms R1-R3) and rover routing.
+
+    Soil parameters of the Bekker-Wong model are interpolated between ``firm``
+    (terrain factor 1.0) and ``loose`` (terrain factor ``eta_loose``). They are
+    engineering estimates for Martian regolith  [verify].
+    """
+
+    # --- soil: firm end / loose end -------------------------------------
+    eta_firm: float = 1.0
+    eta_loose: float = 2.1
+    cohesion_firm_pa: float = 5_000.0
+    cohesion_loose_pa: float = 500.0
+    friction_firm_rad: float = math.radians(38.0)
+    friction_loose_rad: float = math.radians(30.0)
+    k_phi_firm: float = 6.0e6                   # N/m^(n+2)
+    k_phi_loose: float = 4.0e5
+    k_c: float = 1.0e3                          # N/m^(n+1), nearly cohesionless regolith
+    sinkage_exponent_firm: float = 1.0
+    sinkage_exponent_loose: float = 1.1
+    shear_modulus_firm_m: float = 0.005
+    shear_modulus_loose_m: float = 0.025
+    contact_length_floor: float = 0.10          # of the wheel diameter
+    # --- slip ---------------------------------------------------------------
+    slip_critical: float = 0.60                 # above it the wheels dig in
+    slip_critical_wheel_walking: float = 0.90
+    wheel_walking_thrust_factor: float = 1.6
+    slip_tolerance: float = 1.0e-4
+    # --- power --------------------------------------------------------------
+    mmrtg_decay_per_year: float = math.log(110.0 / 72.0) / 17.0   # NASA: 110 W -> 72 W in 17 years
+    panel_dust_loss_per_sol: float = 0.002      # share of output lost per sol without cleaning
+    battery_charge_efficiency: float = 0.95
+    battery_discharge_efficiency: float = 0.95
+    recharge_trigger_fraction: float = 0.75     # below it a parked rover may wait to recharge
+    # --- operations ---------------------------------------------------------
+    min_sun_elevation_drive_rad: float = math.radians(5.0)   # rovers drive in daylight
+    wait_step_s: float = 1_800.0
+    max_traverse_s: float = 5.0 * SOL_S
+    # --- radiation ----------------------------------------------------------
+    spe_speed_factor: float = 0.5               # autonomous navigation slows down in a particle event
+    spe_hold: bool = False                      # True: no driving at all during an event
+    seu_rate_per_s: float = 1.0e-7              # upset probability per second at the reference event
+    seu_reference_dose_rate_sv_s: float = 3.0 * 0.64e-3 / SOL_S
+    electronics_gy_per_sv: float = 1.0 / 3.05   # MSL/RAD mean quality factor in Gale
+    risk_budget: float = 0.05
+    # --- route cost (seconds-equivalent) ------------------------------------
+    weight_time_per_s: float = 1.0
+    weight_energy_per_j: float = 2.0e-3
+    weight_risk: float = 1.0e6
+    weight_slip_per_m: float = 20.0             # cost of a metre driven at slip 1
+
+
+@dataclass(frozen=True, slots=True)
 class SimConfig:
     """Every tunable parameter of the simulator."""
 
@@ -331,6 +403,8 @@ class SimConfig:
     sol_selection: SolSelectionConfig = field(default_factory=SolSelectionConfig)
     comms: CommsConfig = field(default_factory=CommsConfig)
     route_adapter: RouteAdapterConfig = field(default_factory=RouteAdapterConfig)
+    obstacles: ObstacleConfig = field(default_factory=ObstacleConfig)
+    rover: RoverConfig = field(default_factory=RoverConfig)
 
     def __post_init__(self) -> None:
         self.validate()
@@ -367,6 +441,13 @@ class SimConfig:
             (self.comms.max_no_contact_s >= 0.0, "comms: max_no_contact_s must be non-negative"),
             (self.route_adapter.stop_snap_distance_m > 0.0,
              "route_adapter: stop_snap_distance_m must be positive"),
+            (0.0 < self.rover.slip_critical < 1.0, "rover: slip_critical must be in (0, 1)"),
+            (self.rover.slip_critical <= self.rover.slip_critical_wheel_walking < 1.0,
+             "rover: need slip_critical <= slip_critical_wheel_walking < 1"),
+            (self.rover.mmrtg_decay_per_year >= 0.0,
+             "rover: mmrtg_decay_per_year must be non-negative"),
+            (0.0 < self.obstacles.hazard_area_fraction < 1.0,
+             "obstacles: hazard_area_fraction must be in (0, 1)"),
         )
         for ok, message in checks:
             if not ok:

@@ -39,6 +39,30 @@ def flat_terrain(rows: int, cols: int, cell_size_m: float = 10.0, eta: float = 1
                        is_shelter=_shelter_mask(shape, shelters))
 
 
+def patch_terrain(rows: int, cols: int, cell_size_m: float = 10.0, *,
+                  zone: tuple[int, int, int, int], obstacle_height_m: float = 0.0,
+                  zone_eta: float | None = None, eta: float = 1.2, grade: float = 0.0,
+                  shelters: Iterable[Cell] = ((0, 0),)) -> GridTerrain:
+    """Plain with a rectangular patch of obstacles and/or different ground.
+
+    Args:
+        zone: ``(row_start, row_stop, col_start, col_stop)`` of the patch, stops exclusive.
+        obstacle_height_m: height of the rocks inside the patch (0 elsewhere).
+        zone_eta: terrain factor inside the patch (``eta`` when omitted).
+        grade: rise over run of the whole plain toward increasing column index.
+    """
+    shape = (rows, cols)
+    r0, r1, c0, c1 = zone
+    obstacles = np.zeros(shape)
+    obstacles[r0:r1, c0:c1] = obstacle_height_m
+    ground = np.full(shape, eta)
+    if zone_eta is not None:
+        ground[r0:r1, c0:c1] = zone_eta
+    elevation = np.tile(np.arange(cols, dtype=np.float64) * cell_size_m * grade, (rows, 1))
+    return GridTerrain(elevation=elevation, cell_size_m=cell_size_m, walk_eta=ground,
+                       obstacle_height_m=obstacles, is_shelter=_shelter_mask(shape, shelters))
+
+
 def slope_terrain(rows: int, cols: int, cell_size_m: float = 10.0, grade: float = 0.10,
                   eta: float = 1.2, shelters: Iterable[Cell] = ((0, 0),)) -> GridTerrain:
     """Inclined plane rising toward increasing column index.
