@@ -25,24 +25,44 @@ Rules:
   `data/raw/` (as downloaded), `data/processed/<region>/<layer>.tif`, `data/catalog.sqlite`.
 - `data/` is never committed.
 
-## Step 0 — together, before splitting (1–2 h)
+## Step 0 — shared agreements (done)
 
-- [ ] Bring the shared contract (`mars_map/site.py`, `DATA_CONTRACT.md`) from `Alg` into this
-      branch (merge `Alg` → `main` → `Data`). After that `site.py` is changed only by agreement.
-- [ ] Agree on the catalog schema (draft below) and commit it as `mars_map/catalog/schema.sql`.
-- [ ] Agree on the processed layer format: single-band GeoTIFF, region grid, SI units, nodata set.
-- [ ] Add `rasterio` (and `geopandas` for the geologic map) to `requirements.txt`.
+- [x] Shared contract (`mars_map/site.py`, `DATA_CONTRACT.md`, stub generator) copied from `Alg`.
+      `site.py` is changed only by agreement with `Alg`.
+- [x] Catalog schema: [`mars_map/catalog/schema.sql`](mars_map/catalog/schema.sql).
+- [x] Processed layer format and region grid: [`mars_map/grid.py`](mars_map/grid.py).
+- [x] `rasterio` and `geopandas` added to `requirements.txt`.
 
-Catalog schema draft:
+Check that it all works on your machine:
 
-| Table | Columns |
+```bash
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python scripts\check_step0.py
+```
+
+### Catalog tables
+
+| Table | What it holds |
 |---|---|
-| `sources` | id, name, instrument, provider, base_url, license |
-| `products` | id, source_id, product_id, kind (dtm / optical / thermal / mineral), resolution_m, footprint_wkt, min_lon, min_lat, max_lon, max_lat, url, acquired |
-| `regions` | id, name, center_lat, center_lon, min_lon, min_lat, max_lon, max_lat |
-| `layers` | id, region_id, name, unit, resolution_m, path, coverage_frac, source_id |
-| `series` | region_id, sol, name, value |
-| `ratings` | region_id, metric, value, computed_at |
+| `sources` | instrument + provider (HiRISE DTM from USGS, TES from Trek, …) |
+| `products` | everything that exists remotely: kind, resolution, footprint, bbox, download URL |
+| `regions` | candidate areas: centre, size, resolution (this defines the region grid) |
+| `layers` | processed rasters of a region: layer name, unit, source, file path, coverage |
+| `series` | per-sol values of a region (radiation, weather) |
+| `ratings` | region analyzer output, one row per metric |
+
+Longitudes are east-positive in -180..180, latitudes planetocentric.
+
+### Processed layer format
+
+- One layer = one single-band GeoTIFF: `data/processed/<region>/<layer>__<source>.tif`.
+- All layers of a region share one grid (`RegionGrid`): square, local equirectangular projection
+  centred on the region, Mars sphere radius 3 396 190 m, so 1 pixel = `resolution_m` true metres.
+- Row 0 = north, col 0 = west, same as `Site`.
+- SI units. Missing data = `NaN` for float layers, `255` for `uint8` layers.
+- Always use `write_layer()` / `read_layer()` from `mars_map/grid.py`, never open the files directly.
+- The same layer may exist from several sources (`elevation__hirise_dtm.tif`,
+  `elevation__mola.tif`); fusion picks the best one per pixel.
 
 ## A — ingestion (parsers and the database)
 
