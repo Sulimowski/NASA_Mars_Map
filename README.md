@@ -1,6 +1,8 @@
 > Test map site and data format for the algorithms: see [DATA_CONTRACT.md](DATA_CONTRACT.md)
 >
 > Radiation and temperature maps built on that site: see [ENV_MAPS.md](ENV_MAPS.md)
+>
+> EVA route planner (three plans, shelter, JSON for the frontend): see [EVA_PLANNER.md](EVA_PLANNER.md)
 
 # Algoritms First task set 
 

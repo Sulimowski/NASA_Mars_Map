@@ -25,6 +25,10 @@ from .temperature import (TemperatureParams, insolation_ratio, lit_and_incidence
                           surface_temperature_map)
 from .terrain import horizon_angles, sky_view_factor, surface_normal
 
+# Used when a site has no value of its own (real sites may lack some series).
+TYPICAL_DOSE_MSV_PER_SOL = 0.67      # MSL/RAD surface average in Gale
+TYPICAL_DUST_TAU = 0.6
+
 
 class Environment:
     def __init__(self, site: Site, n_azimuth: int = 16, max_distance_m: float = 400.0,
@@ -42,8 +46,23 @@ class Environment:
         self._insolation: dict[int, np.ndarray] = {}
 
     # ---- per-sol values --------------------------------------------------
-    def series_value(self, key: str, sol: int) -> float:
-        """Value of a site.series entry for a sol."""
+    @property
+    def sols(self) -> list[int]:
+        """Sols the site has series for (empty when it has none)."""
+        series = self.site.series
+        if series.get("sol"):
+            return list(series["sol"])
+        return list(range(max((len(v) for v in series.values()), default=0)))
+
+    def series_value(self, key: str, sol: int, default: float | None = None) -> float:
+        """Value of a site.series entry for a sol.
+
+        If the site has no such series at all, `default` is returned when given.
+        """
+        if key not in self.site.series:
+            if default is not None:
+                return default
+            raise KeyError(f"site '{self.site.name}' has no series '{key}'")
         sols = self.site.series.get("sol")
         try:
             index = sols.index(sol) if sols else int(sol)
@@ -52,33 +71,53 @@ class Environment:
             raise ValueError(f"sol {sol} is not in the series of site '{self.site.name}' "
                              f"({len(self.site.series[key])} sols)") from None
 
+    def dust_tau(self, sol: int) -> float:
+        return self.series_value("dust_opacity_tau", sol, TYPICAL_DUST_TAU)
+
+    @property
+    def has_temperature(self) -> bool:
+        return self._temperature_keys() is not None
+
+    def _temperature_keys(self) -> tuple[str, str] | None:
+        """Ground temperature series when the site has them, else the generic ones."""
+        for pair in (("ground_temp_min_c", "ground_temp_max_c"), ("temp_min_c", "temp_max_c")):
+            if all(k in self.site.series for k in pair):
+                return pair
+        return None
+
     def ls(self, sol: int) -> float:
         """Season (solar longitude, degrees) for a sol."""
         return ls_of_sol(sol, self.ls_at_sol0)
 
     def is_particle_event(self, sol: int, factor: float = 2.0) -> bool:
         """True when the sol's dose is far above the usual level (solar particle event)."""
-        doses = self.site.series["radiation_msv_per_sol"]
+        doses = self.site.series.get("radiation_msv_per_sol")
+        if not doses:
+            return False
         return self.series_value("radiation_msv_per_sol", sol) > factor * float(np.median(doses))
 
     # ---- maps ------------------------------------------------------------
     def dose_rate(self, sol: int) -> np.ndarray:
         """Radiation dose rate, microsieverts per Earth hour."""
-        return dose_rate_map(self.series_value("radiation_msv_per_sol", sol),
-                             self.site.layers["elevation"], self.sky_view, self.radiation_params)
+        dose = self.series_value("radiation_msv_per_sol", sol, TYPICAL_DOSE_MSV_PER_SOL)
+        return dose_rate_map(dose, self.site.layers["elevation"], self.sky_view,
+                             self.radiation_params)
 
     def insolation(self, sol: int) -> np.ndarray:
         """Sunlight collected over the sol relative to open flat ground (1 = same)."""
         if sol not in self._insolation:
             self._insolation[sol] = insolation_ratio(
                 self.normal, self.horizons, self.sky_view, self.site.center_lat, self.ls(sol),
-                self.series_value("dust_opacity_tau", sol), self.temperature_params)
+                self.dust_tau(sol), self.temperature_params)
         return self._insolation[sol]
 
     def temperature(self, sol: int, ltst_h: float) -> np.ndarray:
         """Ground temperature in degrees C at local true solar time ltst_h (0..24)."""
+        keys = self._temperature_keys()
+        if keys is None:
+            raise KeyError(f"site '{self.site.name}' has no temperature series")
         return surface_temperature_map(
-            self.series_value("temp_min_c", sol), self.series_value("temp_max_c", sol),
+            self.series_value(keys[0], sol), self.series_value(keys[1], sol),
             ltst_h, day_length_h(self.site.center_lat, self.ls(sol)),
             self.site.layers["thermal_inertia"], self.insolation(sol), self.temperature_params)
 
@@ -97,5 +136,5 @@ class Environment:
                                            self.ls(sol), ltst_h)
         if up <= 0:
             return cos_i
-        through_dust = math.exp(-self.series_value("dust_opacity_tau", sol) / up)
+        through_dust = math.exp(-self.dust_tau(sol) / up)
         return (solar_flux_toa(self.ls(sol)) * through_dust * cos_i * lit).astype(np.float32)
