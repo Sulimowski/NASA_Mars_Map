@@ -296,7 +296,11 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        if "/api/" in (args[0] if args else ""):
+        # Log API calls and errors; stay quiet about every page and image that is served.
+        # For an error (a missing file, say) the first argument is the status code, not
+        # the request line, so it is turned into text before looking inside it.
+        first = str(args[0]) if args else ""
+        if "/api/" in first or fmt.startswith("code "):
             super().log_message(fmt, *args)
 
 
