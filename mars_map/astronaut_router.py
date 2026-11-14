@@ -175,6 +175,9 @@ class MissionPlan:
     usage_pct: dict = field(default_factory=dict)
     radio: dict = field(default_factory=dict)
     compute_s: float = 0.0
+    # Verdict of the sequential astronaut simulator on the finished plan (fatigue, heat,
+    # water, return oxygen, emergency reach); filled by the pipeline.
+    physiology: dict = field(default_factory=dict)
     site: Site | None = field(default=None, repr=False, compare=False)
     suit: SuitParams | None = field(default=None, repr=False, compare=False)
 
@@ -257,6 +260,7 @@ class MissionPlan:
             "stops": self.stops,
             "legs": [s.to_dict() for s in self.segments],
             "radio": {k: v for k, v in self.radio.items() if k != "samples"},
+            "physiology": self.physiology,
             "waypoints": self.waypoints(waypoint_step_m),
             "compute_s": round(self.compute_s, 3),
         }
@@ -366,10 +370,14 @@ def _edge_arrays(g: _Grid, strat: Strategy, mission: MissionParams, suit: SuitPa
         d = g.res * _STEP[k]
         dh = g.elev[dst] - g.elev[src]
         t, _, o2, wh = locomotion(d, dh, g.eta[dst], g.speed[dst], mission, suit, g.heater[dst])
+        # A step the crew member cannot power even at the slowest pace has infinite time.
+        stuck = ~np.isfinite(t)
+        if stuck.any():
+            t, o2, wh = (np.where(stuck, 0.0, a) for a in (t, o2, wh))
         slope = np.degrees(np.arctan(np.abs(dh) / d))
         c = _generalized_cost(strat, t, o2, g.loose[dst], g.pen[dst], g.rate[dst], slope,
                               rate_ref, mission)
-        bad = slope > hard
+        bad = (slope > hard) | stuck
         if edge_blocked is not None:
             bad |= edge_blocked[k][src]
         else:
@@ -759,11 +767,15 @@ class EvaRouter:
         j = idx[1:]
         t, met, o2, wh = locomotion(d, dh, fl["eta"][j], fl["speed"][j], self.mission, self.suit,
                                     fl["heater"][j])
+        stuck = ~np.isfinite(t)              # beyond the power the crew member can hold
+        if stuck.any():
+            t, o2, wh = (np.where(stuck, 0.0, a) for a in (t, o2, wh))
         slope = np.degrees(np.arctan(dh / d))
         out = {"idx": idx, "rr": rr, "cc": cc, "z": z, "d": d, "dh": dh, "t": t, "met": met,
                "o2": o2, "wh": wh, "slope": slope, "dose": fl["rate"][j] * t / 3600.0,
                "blocked": bool(fl["fat" if margin else "imp"][idx].any())
-               or bool((np.abs(slope) > self.mission.hard_max_slope_deg).any())}
+               or bool((np.abs(slope) > self.mission.hard_max_slope_deg).any())
+               or bool(stuck.any())}
         if strat is not None:
             out["cost"] = _generalized_cost(strat, t, o2, fl["loose"][j], fl["pen"][j],
                                             fl["rate"][j], np.abs(slope), self.rate_ref,

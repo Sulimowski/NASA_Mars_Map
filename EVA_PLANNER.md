@@ -42,11 +42,12 @@ leg   = route_segment(site, (100, 200), (900, 1500))
 
 | File | What it does |
 |---|---|
-| `mars_map/biomechanics.py` | Walking speed, metabolic power, oxygen and battery per step. `SuitParams` |
+| `mars_map/biomechanics.py` | Walking speed, metabolic power, oxygen and battery per step, taken from the astronaut model in `mars_eva_sim`. `SuitParams` |
 | `mars_map/astronaut_terrain.py` | Ground model: boot sinkage, speed and energy factors, impassable mask, weather rasters |
 | `mars_map/astronaut_router.py` | Route search, smoothing, target choice, strategies, shelter. `EvaRouter` |
 | `mars_map/radio.py` | Line of sight to the base with the first Fresnel zone |
-| `mars_map/pipeline.py` | Environment -> ground model -> router -> three plans -> JSON |
+| `mars_map/pipeline.py` | Environment -> ground model -> router -> three plans -> physiology check -> JSON |
+| `mars_eva_sim/` | The astronaut model: walking physics used by the router, and the sequential simulator that checks every finished plan |
 
 ## The three plans
 
@@ -90,14 +91,38 @@ pass a ready `Environment` to `plan_site(..., env=env)` to skip that when replan
 
 - **Soil.** Bekker-Wong sinkage `p = (k_c / b + k_phi) * z^n` under one boot. The soil moduli
   come from thermal inertia (low = loose). Loose sand gives about 5 cm, firm ground under 1 cm.
-- **Energy.** Pandolf load-carriage equation with the terrain coefficient from the sinkage and
-  the rock cover, weight terms scaled to Mars gravity, plus the Santee downhill correction.
-  About 295 W walking on firm level ground.
-- **Speed.** Tobler's hiking function, so uphill and downhill differ, scaled to
-  `walk_speed_flat_kmh` and slowed by loose or rocky ground.
-- **Oxygen** follows the metabolic power; **battery** = electronics + cooling + a heater that
-  follows the ground temperature.
+- **Energy, speed, oxygen, battery** come from the astronaut model in `mars_eva_sim`
+  (`src/physiology/vectorized.py`, the array form of its algorithms A2-A4), so the router,
+  the report and the simulator use one set of formulas and parameters:
+  - *Energy.* Pandolf load-carriage equation with the terrain coefficient from the sinkage
+    and the rock cover; the climbing term scales with Mars gravity, level walking less than
+    that; descents recover half of the grade term and pay for braking beyond 10 %. About
+    380 W walking at 3 km/h on firm level ground.
+  - *Speed.* The preferred pace (3 km/h) times the terrain speed factor, lowered until the
+    metabolic power fits what the crew member can hold (about 384 W for a crew member 30
+    sols after landing). `walk_speed_flat_kmh` is no longer used.
+  - *Impossible steps.* Where even the slowest walk needs more than that power (a steep
+    climb over loose ground) the step is blocked, like a cliff.
+  - *Oxygen* follows the metabolic power plus suit leakage; *battery* = avionics + fan
+    (scaled by the workload) + glove and boot heaters that follow the ground temperature.
 - **Dose** = dose rate under the feet x time, also while working at a target.
+
+## Physiology check
+
+A step price cannot hold what builds up along a route. After a plan is assembled the
+pipeline walks it through the sequential simulator of `mars_eva_sim` (on the site merged
+to about 100 x 100 cells) and stores the verdict in `plan.physiology`:
+
+- `status`: `OK`, `MARGINAL` (walkable, with warnings) or `FAIL` (a constraint breaks or a
+  step is impassable; `message` and `broken_constraint` say where and why);
+- fatigue and the rests it forces, peak heart rate, mean walking power, stored heat, water;
+- the oxygen and time needed to walk back from every point, emergency reach of the
+  secondary oxygen, the longest stretch without radio contact;
+- `difference_from_plan`: simulator total minus the plan total, per quantity.
+
+`plan_site(..., check_physiology=False)` skips it (it takes a few seconds per site).
+`conditions.sol_assessment` says whether the sol is fit for an EVA (no particle event
+within one sol, daylight window) and which sol of the series is best.
 
 ## Emergency: solar particle event
 
@@ -120,7 +145,8 @@ last point still in contact as a relay drop point, and how much of the stretch a
 schema        "eva-plan/1"
 units         meaning of every field
 site          name, resolution_m, shape, extent_m, center_lat/lon, start, targets[], no_go[]
-conditions    sol, ltst_h, ls_deg, particle_event, dose_rate_usv_h{min,median,max}, ground_temp_c{...}
+conditions    sol, ltst_h, ls_deg, particle_event, dose_rate_usv_h{min,median,max}, ground_temp_c{...},
+              sol_assessment{sol, allowed, reasons[], best_sol, allowed_sols, window_ltst_h}
 mission       the MissionParams used
 suit          the SuitParams used
 comparison[]  one line per strategy: targets, time_h, distance_km, dose_msv, o2_used_l, science_value
@@ -138,6 +164,9 @@ limits, usage_pct{time_s, distance_m, o2_l, energy_wh, dose_msv}     percent of 
 stops[]       start, targets, return: position, arrive/depart minute, O2 %, battery %, dose
 legs[]        from, to, distance, duration, gain/drop, max slope, O2, energy, dose, vertices_m[[x, y], ...]
 radio         shadow_m, degraded_m, shadow_zones[], relay_points[]
+physiology    status, message, broken_constraint, warnings[], eva_time_h, o2/battery remaining,
+              limiting_resource, peak_fatigue, peak_heart_rate_bpm, rest_min, emergency_safety,
+              radio{...}, difference_from_plan{...}
 waypoints[]   the route for drawing, one point about every 6 m
 emergency_shelters[]   only with --shelters: escape route from every target stop
 ```
@@ -156,12 +185,9 @@ path. `waypoints` carry the values along it for colouring and for the timeline.
 
 ## Assumptions to replace with real numbers
 
-- Everything in `SuitParams` (masses, boot size, oxygen tank, battery, heater) and the
-  Bekker-Wong moduli in `astronaut_terrain.py`.
-- The Pandolf and Santee coefficients are the published ones as recalled; check them against
-  the papers before quoting numbers. The Santee term is capped (braking costs at most 30 % of
-  lifting on the same grade) because the published fit is far outside its range for a suit
-  that weighs as much as the astronaut.
+- The boot size in `SuitParams` and the Bekker-Wong moduli in `astronaut_terrain.py`.
+- Every parameter of the astronaut model (`mars_eva_sim/src/core/config.py`, the values
+  marked `[verify]`), including masses, oxygen tank, battery and the Pandolf scaling.
 - Strategy weights in `STRATEGIES`.
 
 ## Known gaps

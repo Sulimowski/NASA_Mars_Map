@@ -14,8 +14,13 @@ From the command line:
     python -m mars_map.pipeline --site data/gale --sol 3650 --ltst 10
 
 Stages: Environment (radiation and temperature maps) -> ground model -> router
-(coarse graph) -> three plans. The first three are done once per site and sol;
-replanning with other targets or strategies only repeats the last one.
+(coarse graph) -> three plans -> physiology check. The first three are done once
+per site and sol; replanning with other targets or strategies only repeats the rest.
+
+The physiology check walks every finished plan through the sequential astronaut
+simulator (mars_eva_sim): fatigue and rests, stored heat, water, the oxygen to walk
+back from every point, emergency reach, radio silence. Its verdict is stored in
+plan.physiology and written to the JSON.
 """
 
 from __future__ import annotations
@@ -33,6 +38,9 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import mars_map  # noqa: F401  (run directly, e.g. PyCharm Run: make relative imports work)
     __package__ = "mars_map"
+
+from mars_eva_sim.src.core.constants import SOL_S
+from mars_eva_sim.src.integration.router_bridge import PlanChecker, sol_assessment
 
 from .astronaut_router import STRATEGIES, EvaRouter, MissionPlan, ShelterRoute
 from .astronaut_terrain import build_astronaut_terrain, uniform_dose_rate_msv_h
@@ -106,6 +114,7 @@ class EvaPlanSet:
     plans: dict[str, MissionPlan]
     timings_s: dict[str, float] = field(default_factory=dict)
     emergency: dict[str, list[dict]] = field(default_factory=dict)
+    sol_assessment: dict | None = None     # is this sol fit for an EVA, and which is best
 
     def shelter(self, current_pos_m: tuple[float, float], **kwargs) -> ShelterRoute:
         """Escape route to the nearest natural radiation shelter from any point."""
@@ -154,7 +163,7 @@ class EvaPlanSet:
                             for t in site.targets],
                 "no_go": [[[round(x, 1), round(y, 1)] for x, y in poly] for poly in site.no_go],
             },
-            "conditions": self.conditions.summary(),
+            "conditions": {**self.conditions.summary(), "sol_assessment": self.sol_assessment},
             "mission": asdict(m),
             "suit": asdict(self.router.suit),
             "strategies": plans,
@@ -180,7 +189,8 @@ class EvaPlanSet:
 def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
               env: Environment | None = None, use_environment: bool = True,
               suit: SuitParams | None = None, strategies: list[str] | None = None,
-              check_radio: bool = True, shelters: bool = False) -> EvaPlanSet:
+              check_radio: bool = True, shelters: bool = False,
+              check_physiology: bool = True) -> EvaPlanSet:
     """Plan the EVA of a site for one sol.
 
     sol       -- a sol of site.series (default: the first one).
@@ -188,6 +198,7 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     env       -- a prepared Environment, to reuse it between runs (it takes seconds to build).
     use_environment=False -- skip the terrain-following maps: uniform radiation, no temperature.
     shelters  -- also precompute an escape route from every stop of every plan.
+    check_physiology -- walk every plan through the astronaut simulator (a few seconds).
     """
     timings: dict[str, float] = {}
     clock = time.perf_counter
@@ -221,7 +232,17 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
                 0, "Солнечная вспышка в этот сол: мощность дозы многократно выше обычной, "
                    "выход лучше перенести.")
 
-    result = EvaPlanSet(site, conditions, router, plans, timings)
+    result = EvaPlanSet(site, conditions, router, plans, timings,
+                        sol_assessment=sol_assessment(site, conditions.sol, suit.config))
+    if check_physiology:
+        t = clock()
+        checker = PlanChecker(
+            site, ground_model=terrain, environment_model=env, sol=conditions.sol,
+            start_ltst_h=max(0.0, ltst_h - 1.0), astronaut=suit.astronaut(), suit=suit.suit(),
+            time_on_surface_s=suit.sols_on_surface * SOL_S, config=suit.config)
+        for plan in plans.values():
+            plan.physiology = checker.check(plan)
+        timings["physiology"] = clock() - t
     if shelters:
         t = clock()
         for name, plan in plans.items():
@@ -345,6 +366,15 @@ def print_report(result: EvaPlanSet) -> None:
             print(f"  пропущена: {s['name']} (P{s['priority']}) — {s['reason']}")
         for wmsg in p.warnings:
             print(f"  ! {wmsg}")
+        ph = p.physiology
+        if ph.get("eva_time_h") is not None:
+            print(f"  физиология: {ph['status']} — {ph['message']}; усталость до "
+                  f"{ph['peak_fatigue']:.2f}, пульс до {ph['peak_heart_rate_bpm']}, отдых "
+                  f"{ph['rest_min']:.0f} мин, первым кончится {ph['limiting_resource']}")
+            for wmsg in ph["warnings"]:
+                print(f"  ! {wmsg}")
+        elif ph:
+            print(f"  физиология: {ph['status']} — {ph['message']}")
     print("\nвремя, с: " + ", ".join(f"{k} {v:.2f}" for k, v in result.timings_s.items()))
 
 

@@ -1,112 +1,125 @@
 """How fast a suited astronaut walks and what it costs: time, oxygen, battery.
 
+The numbers come from the astronaut model in ``mars_eva_sim`` (algorithms A2-A4:
+Pandolf load carriage rescaled to Mars, speed limited by the power the crew
+member can hold, oxygen and battery from the metabolic power). This module is
+the adapter the router calls: it keeps the router's units (litres of O2,
+watt-hours, degrees Celsius) and array interface, and gets every value from
+that one model, so the planner, the report and the simulator cannot disagree.
+
+What is taken from where:
+* ground (terrain coefficient, speed factor, sinkage)  -- ``astronaut_terrain``
+* radiation and ground temperature                    -- ``environment``
+* speed, metabolic power, oxygen, battery, heaters    -- ``mars_eva_sim``
+
 One vectorised implementation, used for every graph edge during the search and
-again for the final route, so the planner and the report can never disagree.
+again for the final route.
 
-Models:
-* speed       -- Tobler's hiking function (direction matters: a step up is slower
-                 than the same step down), scaled so flat firm ground gives
-                 MissionParams.walk_speed_flat_kmh, times the terrain speed factor.
-* metabolism  -- Pandolf load-carriage equation with the terrain coefficient from
-                 astronaut_terrain, weight terms scaled to Mars gravity, and the
-                 Santee downhill correction.
-* oxygen      -- metabolic power / energy per litre of O2.
-* battery     -- avionics + cooling loop that follows the metabolic heat + heater
-                 that follows the ground temperature.
-
-Every number in SuitParams is a working assumption, like MissionParams.
+A step can be physically impossible: on a steep climb over loose ground even
+the slowest walk needs more power than a person can sustain. ``locomotion``
+returns infinite time for such a step and the router treats it as blocked.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import astuple, dataclass
+from pathlib import Path
 
 import numpy as np
 
-from .site import MissionParams
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from mars_eva_sim.src.core.config import DEFAULT_CONFIG, SimConfig
+from mars_eva_sim.src.core.constants import HOUR_S, O2_DENSITY_STP_KG_M3, SOL_S
+from mars_eva_sim.src.core.schemas import AstronautProfile, SuitProfile, TaskType
+from mars_eva_sim.src.physiology import vectorized
+
+if __package__ in (None, ""):
+    from mars_map.site import MissionParams
+else:
+    from .site import MissionParams
 
 MARS_GRAVITY = 3.72
 EARTH_GRAVITY = 9.81
 
+_ASTRONAUT = AstronautProfile()
+_SUIT = SuitProfile()
+
 
 @dataclass
 class SuitParams:
-    """Astronaut and life-support assumptions. Not NASA requirements."""
-    body_mass_kg: float = 75.0
-    suit_mass_kg: float = 70.0
+    """Astronaut and suit as the router sees them, in the router's units.
+
+    Defaults are the profiles of the astronaut model. ``astronaut()``, ``suit()``
+    and ``config`` turn the values back into that model's inputs, so a changed
+    field here changes the physics everywhere.
+    """
+    body_mass_kg: float = _ASTRONAUT.body_mass_kg
+    suit_mass_kg: float = _SUIT.mass_kg
     # Boot sole pressing on the ground during single support (Bekker-Wong sinkage).
     boot_area_m2: float = 0.035
     boot_width_m: float = 0.11
 
-    # Walking
-    min_speed_ms: float = 0.15            # never slower than this, however bad the ground
-    suit_joint_overhead_w: float = 60.0   # extra work against the pressurised suit joints
-    min_metabolic_w: float = 150.0
-    work_metabolic_w: float = 220.0       # sampling / working at a stop
-    # Braking on a descent costs at most this share of lifting on the same grade.
-    downhill_cost_cap: float = 0.3
-
     # Oxygen
-    o2_tank_l: float = 480.0              # litres at standard conditions
-    o2_joule_per_l: float = 20_100.0      # energy released per litre of O2 consumed
-    o2_reserve_frac: float = 0.20         # must still be in the tank at the airlock
+    o2_tank_l: float = float(vectorized.o2_kg_to_litres(_SUIT.o2_primary_kg))   # litres, standard conditions
+    o2_reserve_frac: float = DEFAULT_CONFIG.routing.reserve_fraction   # must still be in the tank at the airlock
 
     # Battery
-    battery_wh: float = 1200.0
-    battery_reserve_frac: float = 0.20
-    base_electric_w: float = 70.0         # avionics, comms, fan, pump
-    cooling_w_per_metabolic_w: float = 0.12
-    heater_w_per_k: float = 0.6           # per kelvin of ground temperature below ...
-    heater_on_below_c: float = -20.0      # ... this
+    battery_wh: float = _SUIT.battery_j / HOUR_S
+    battery_reserve_frac: float = DEFAULT_CONFIG.routing.reserve_fraction
+
+    # Crew condition and work
+    sols_on_surface: float = 30.0         # time since landing; sets the fitness of the crew member
+    stop_task: str = TaskType.SAMPLING.value   # kind of work at a target stop
 
     @property
     def total_mass_kg(self) -> float:
         return self.body_mass_kg + self.suit_mass_kg
 
+    @property
+    def config(self) -> SimConfig:
+        """Parameters of the astronaut model."""
+        return DEFAULT_CONFIG
 
-# Tobler: speed ~ exp(-3.5 * |grade + 0.05|), fastest on a gentle 5 % descent.
-_TOBLER_K = 3.5
-_TOBLER_FLAT = float(np.exp(-_TOBLER_K * 0.05))
+    def astronaut(self) -> AstronautProfile:
+        """Crew member profile of the astronaut model."""
+        return AstronautProfile(body_mass_kg=self.body_mass_kg)
+
+    def suit(self) -> SuitProfile:
+        """Suit profile of the astronaut model."""
+        return SuitProfile(mass_kg=self.suit_mass_kg,
+                           o2_primary_kg=self.o2_tank_l * 1.0e-3 * O2_DENSITY_STP_KG_M3,
+                           battery_j=self.battery_wh * HOUR_S)
+
+    def power_cap_w(self) -> float:
+        """Metabolic power the crew member may hold while walking, W."""
+        return vectorized.planning_power_cap_w(self.astronaut(), self.config,
+                                               self.sols_on_surface * SOL_S)
 
 
-def tobler_factor(grade):
-    """Walking speed relative to flat ground for a step with slope = rise / run."""
-    return np.exp(-_TOBLER_K * np.abs(grade + 0.05)) / _TOBLER_FLAT
+_MODEL_CACHE: dict[tuple, tuple[AstronautProfile, SuitProfile, float]] = {}
 
 
-def metabolic_power(speed_ms, grade, eta, suit: SuitParams = SuitParams()):
-    """Metabolic power in watts while walking.
-
-    speed_ms -- walking speed; grade -- rise / run (negative downhill);
-    eta      -- Pandolf terrain coefficient (1 = firm ground, ~2.1 = loose sand).
-    """
-    w, load = suit.body_mass_kg, suit.suit_mass_kg
-    total = w + load
-    g = MARS_GRAVITY / EARTH_GRAVITY
-    pct = grade * 100.0
-    up, down = np.maximum(pct, 0.0), np.maximum(-pct, 0.0)
-
-    standing = 1.5 * w + 2.0 * total * (load / w) ** 2 * g
-    level = eta * total * 1.5 * speed_ms ** 2 * g
-    lifting = eta * total * 0.35 * speed_ms * up * g
-    # Santee et al. 2001, written so that it is zero on level ground. A positive
-    # value is energy saved by the descent, a negative one is braking effort.
-    santee = eta * g * (down * total * speed_ms / 3.5 - (total / w) * (down ** 2 + 12.0 * down))
-    braking_cap = suit.downhill_cost_cap * eta * total * 0.35 * speed_ms * down * g
-    descent = np.maximum(santee, -braking_cap)
-
-    power = standing + level + lifting - descent + suit.suit_joint_overhead_w
-    return np.maximum(power, suit.min_metabolic_w)
+def _model(suit: SuitParams) -> tuple[AstronautProfile, SuitProfile, float]:
+    """(astronaut, suit, power cap) of the astronaut model for these parameters, cached:
+    the router asks for them on every one of its many small calls."""
+    key = astuple(suit)
+    if key not in _MODEL_CACHE:
+        _MODEL_CACHE[key] = (suit.astronaut(), suit.suit(), suit.power_cap_w())
+    return _MODEL_CACHE[key]
 
 
 def electric_power(metabolic_w, heater_w, suit: SuitParams = SuitParams()):
-    """Battery drain in watts."""
-    return suit.base_electric_w + suit.cooling_w_per_metabolic_w * metabolic_w + heater_w
+    """Battery drain in watts: avionics, fan (scaled by the workload) and heaters."""
+    return vectorized.electric_power_w(metabolic_w, heater_w, _model(suit)[1], suit.config)
 
 
 def heater_power(ground_temp_c, suit: SuitParams = SuitParams()):
-    """Suit heater power in watts for a ground temperature."""
-    return suit.heater_w_per_k * np.maximum(suit.heater_on_below_c - ground_temp_c, 0.0)
+    """Glove and boot heater power in watts for a ground temperature."""
+    return vectorized.extremity_heater_w(vectorized.celsius_to_kelvin(ground_temp_c),
+                                         _model(suit)[1], suit.config)
 
 
 def locomotion(dist_m, rise_m, eta, speed_mult, mission: MissionParams,
@@ -116,21 +129,25 @@ def locomotion(dist_m, rise_m, eta, speed_mult, mission: MissionParams,
     dist_m -- horizontal length; rise_m -- height change (negative downhill);
     eta, speed_mult -- terrain coefficients of the cell being stepped onto.
     Returns (time_s, metabolic_w, o2_litres, energy_wh).
+
+    The speed is the astronaut's preferred pace times ``speed_mult``, lowered
+    until the metabolic power fits what the crew member can hold. A step that
+    does not fit even at the slowest pace comes back with infinite time, oxygen
+    and energy. ``mission`` is kept for the call signature; the walking speed is
+    no longer a mission constant.
     """
-    grade = rise_m / dist_m
-    speed = np.maximum(mission.walk_speed_flat_kmh / 3.6 * tobler_factor(grade) * speed_mult,
-                       suit.min_speed_ms)
-    time_s = dist_m / speed
-    met = metabolic_power(speed, grade, eta, suit)
-    o2 = met * time_s / suit.o2_joule_per_l
-    wh = electric_power(met, heater_w, suit) * time_s / 3600.0
-    return time_s, met, o2, wh
+    astronaut, suit_profile, cap = _model(suit)
+    steps = vectorized.walking_steps(dist_m, rise_m, eta, speed_mult, heater_w,
+                                     astronaut=astronaut, suit=suit_profile,
+                                     cfg=suit.config, power_cap_w=cap)
+    return (steps.time_s, steps.metabolic_w, vectorized.o2_kg_to_litres(steps.o2_kg),
+            steps.battery_j / HOUR_S)
 
 
 def dwell(minutes: float, heater_w: float = 0.0, suit: SuitParams = SuitParams()
           ) -> tuple[float, float, float]:
     """Working at a stop: (time_s, o2_litres, energy_wh)."""
     time_s = minutes * 60.0
-    o2 = suit.work_metabolic_w * time_s / suit.o2_joule_per_l
-    wh = float(electric_power(suit.work_metabolic_w, heater_w, suit)) * time_s / 3600.0
-    return time_s, o2, wh
+    _, o2_kg, battery_j = vectorized.stationary_work(time_s, TaskType(suit.stop_task), heater_w,
+                                                     suit=_model(suit)[1], cfg=suit.config)
+    return time_s, float(vectorized.o2_kg_to_litres(o2_kg)), battery_j / HOUR_S
