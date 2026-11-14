@@ -1,0 +1,126 @@
+{
+  "name": "nili_planum",
+  "source": "fused from: crism, ctx_dtm, ctx_optical, hrsc_mola, mola, tes_albedo, themis, themis_ti | science_score = CRISM minerals",
+  "resolution_m": 2.0,
+  "center_lat": 18.432,
+  "center_lon": 77.238,
+  "shape": [
+    1000,
+    1000
+  ],
+  "grid_convention": "layer[row, col]; row 0 = north, col 0 = west; points are (x_m east, y_m south) from NW corner",
+  "layer_spec": {
+    "elevation": {
+      "unit": "m",
+      "meaning": "Height above Mars datum"
+    },
+    "slope": {
+      "unit": "deg",
+      "meaning": "Terrain slope, derived from elevation"
+    },
+    "roughness": {
+      "unit": "m",
+      "meaning": "Local relief (std of elevation in a small window)"
+    },
+    "rock_abundance": {
+      "unit": "0..1",
+      "meaning": "Fraction of area covered by rocks"
+    },
+    "thermal_inertia": {
+      "unit": "J m^-2 K^-1 s^-1/2",
+      "meaning": "Low = loose sand/dust, high = rock"
+    },
+    "terrain_class": {
+      "unit": "class",
+      "meaning": "See TERRAIN_CLASSES"
+    },
+    "science_score": {
+      "unit": "0..1",
+      "meaning": "How interesting the spot is for the mission goals"
+    },
+    "nodata": {
+      "unit": "bool",
+      "meaning": "True where real data is missing"
+    }
+  },
+  "terrain_classes": {
+    "0": "bedrock",
+    "1": "sand",
+    "2": "boulders",
+    "3": "impassable"
+  },
+  "series": {
+    "sol": [
+      1130,
+      1131,
+      1132,
+      1133
+    ],
+    "pressure_pa": [
+      777.1,
+      774.9,
+      774.1,
+      778.9
+    ],
+    "temp_max_c": [
+      -23.2,
+      -17.0,
+      -23.4,
+      -24.7
+    ],
+    "temp_min_c": [
+      -77.3,
+      -79.2,
+      -77.9,
+      -79.3
+    ]
+  },
+  "start": [
+    1195.0,
+    833.0
+  ],
+  "targets": [
+    {
+      "name": "Perseverance stop, sol 1710",
+      "x_m": 841.0,
+      "y_m": 1261.0,
+      "priority": 1,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 46 sols (sol 1710 to 1756). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/01710/ids/edr/browse/ncam/NLM_1710_0818743254_722ECM_N0825900NCAM00230_00_2LLJ01.png"
+    },
+    {
+      "name": "Perseverance stop, sol 1980",
+      "x_m": 665.0,
+      "y_m": 711.0,
+      "priority": 1,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 26 sols (sol 1980 to 2006). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/01980/ids/edr/browse/ncam/NLG_1980_0842709197_925ECM_N0910852NCAM00528_00_2I4J01.png"
+    },
+    {
+      "name": "Perseverance stop, sol 1792",
+      "x_m": 363.0,
+      "y_m": 1253.0,
+      "priority": 2,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 13 sols (sol 1792 to 1805). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/01792/ids/edr/browse/ncam/NLG_1792_0826025835_771ECM_N0870000SCAM03792_00_1LLJ01.png"
+    },
+    {
+      "name": "Perseverance stop, sol 2009",
+      "x_m": 711.0,
+      "y_m": 787.0,
+      "priority": 2,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 13 sols (sol 2009 to 2022). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/02009/ids/edr/browse/ncam/NLG_2009_0845292281_221ECM_N0911496NCAM00500_00_2I4J01.png"
+    }
+  ],
+  "no_go": [],
+  "mission": {
+    "max_slope_deg": 15.0,
+    "hard_max_slope_deg": 25.0,
+    "walk_speed_flat_kmh": 2.0,
+    "eva_max_hours": 6.0,
+    "return_reserve_frac": 0.25,
+    "max_dose_msv": 1.0,
+    "max_distance_km": 8.0
+  }
+}

@@ -92,6 +92,38 @@ The API, for the GUI or anything else: `POST /api/plan` with
 `GET /api/health` lists the built sites. Details in the header of
 [`scripts/serve.py`](scripts/serve.py).
 
+## Stepping around dust devils during a walk
+
+With the map opened from `scripts\serve.py`, the astronaut on the route reacts to the dust
+devils drawn on the map:
+
+1. Every frame the page checks each vortex: if the track it will sweep over the rest of its
+   life comes within 60 m of the next 350 m of the route, it is a threat.
+2. The astronaut stops. The corridor to keep out of is outlined in red.
+3. The page asks the planner (`POST /api/reroute`) for a route from where the astronaut
+   stands, through the stops not yet visited (in the planned order) and back to the base,
+   that stays 75 m away from the vortex's track.
+4. The new route replaces the rest of the old one and the walk goes on. The dust devil box
+   says how much longer it is. Back at the base, the next walk follows the plan again.
+
+When there is no way around, or the vortex is already on top of the astronaut, or the page
+was not opened from `serve.py`, the astronaut waits until the vortex has passed.
+
+Try it: the button **Send one across the route** in the dust devil box. The checkbox
+**Avoid dust devils** switches the behaviour off.
+
+What to know:
+
+- **The vortices are an illustration.** How many appear follows the hazards forecast; where
+  they appear and where they drift is random, as before. Nothing detects real dust devils.
+  The feature shows what the planner does once a vortex and its heading are known.
+- **The clock is the animation's.** The astronaut covers the route in 42 seconds and a
+  vortex lives 8–14 seconds, so distances are real but times are not.
+- **A reroute takes about a second** (a few seconds the first time for a site). It keeps the
+  order of the stops, uses the strategy of the plan on screen and skips the physiology
+  check. A stop the corridor cuts off is left out and named.
+- The numbers in the EVA plan box stay those of the original plan.
+
 ## 3D view
 
 ```bash
