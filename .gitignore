@@ -1,5 +1,19 @@
 ﻿.idea
 .venv/
 __pycache__/
-# Downloaded and generated data, never committed
-data/
+
+# Downloaded and generated data is not committed, except the small finished results of each
+# site, so the GUI and the 3D maps open on any computer without rebuilding:
+#   data/<site>/view3d.html, site.json, eva_plans.json, astronaut_plan.json   (~9 MB per site)
+# layers.npz (~66 MB per site) stays out: share it as a zip in a GitHub Release.
+data/*
+!data/*/
+data/*/*
+!data/*/view3d.html
+!data/*/site.json
+!data/*/eva_plans.json
+!data/*/astronaut_plan.json
+
+# Hazard models: downloads and pictures stay out, the forecasts the 3D maps read go in.
+hazards/data/*
+!hazards/data/*_dust_devils.csv

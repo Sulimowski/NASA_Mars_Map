@@ -1,0 +1,150 @@
+{
+  "name": "jezero_delta",
+  "source": "fused from: crism, ctx_dtm, hirise_dtm, hirise_ortho, hrsc_mola, mola, tes_albedo, themis, themis_ti | rock_abundance = texture proxy; science_score = CRISM minerals",
+  "resolution_m": 2.0,
+  "center_lat": 18.458,
+  "center_lon": 77.402,
+  "shape": [
+    1000,
+    1000
+  ],
+  "grid_convention": "layer[row, col]; row 0 = north, col 0 = west; points are (x_m east, y_m south) from NW corner",
+  "layer_spec": {
+    "elevation": {
+      "unit": "m",
+      "meaning": "Height above Mars datum"
+    },
+    "slope": {
+      "unit": "deg",
+      "meaning": "Terrain slope, derived from elevation"
+    },
+    "roughness": {
+      "unit": "m",
+      "meaning": "Local relief (std of elevation in a small window)"
+    },
+    "rock_abundance": {
+      "unit": "0..1",
+      "meaning": "Fraction of area covered by rocks"
+    },
+    "thermal_inertia": {
+      "unit": "J m^-2 K^-1 s^-1/2",
+      "meaning": "Low = loose sand/dust, high = rock"
+    },
+    "terrain_class": {
+      "unit": "class",
+      "meaning": "See TERRAIN_CLASSES"
+    },
+    "science_score": {
+      "unit": "0..1",
+      "meaning": "How interesting the spot is for the mission goals"
+    },
+    "nodata": {
+      "unit": "bool",
+      "meaning": "True where real data is missing"
+    }
+  },
+  "terrain_classes": {
+    "0": "bedrock",
+    "1": "sand",
+    "2": "boulders",
+    "3": "impassable"
+  },
+  "series": {
+    "sol": [
+      1130,
+      1131,
+      1132,
+      1133
+    ],
+    "pressure_pa": [
+      777.1,
+      774.9,
+      774.1,
+      778.9
+    ],
+    "temp_max_c": [
+      -23.2,
+      -17.0,
+      -23.4,
+      -24.7
+    ],
+    "temp_min_c": [
+      -77.3,
+      -79.2,
+      -77.9,
+      -79.3
+    ]
+  },
+  "start": [
+    719.0,
+    1003.0
+  ],
+  "targets": [
+    {
+      "name": "Perseverance stop, sol 502",
+      "x_m": 1221.0,
+      "y_m": 967.0,
+      "priority": 1,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 33 sols (sol 502 to 535). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/00502/ids/edr/browse/ncam/NLF_0502_0711519639_144ECM_N0261222NCAM00501_01_295J01.png"
+    },
+    {
+      "name": "Perseverance stop, sol 565",
+      "x_m": 969.0,
+      "y_m": 1431.0,
+      "priority": 1,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 27 sols (sol 565 to 592). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/00565/ids/edr/browse/ncam/NLF_0565_0717112627_897ECM_N0290000NCAM00514_01_295J01.png"
+    },
+    {
+      "name": "Perseverance stop, sol 609",
+      "x_m": 841.0,
+      "y_m": 1259.0,
+      "priority": 2,
+      "dwell_min": 40,
+      "note": "Perseverance worked here for 20 sols (sol 609 to 629). Photo from the spot: https://mars.nasa.gov/mars2020-raw-images/pub/ods/surface/sol/00609/ids/edr/browse/ncam/NLF_0609_0721009210_550ECM_N0301096NCAM00501_01_295J01.png"
+    },
+    {
+      "name": "Clay minerals exposure 1",
+      "x_m": 815.0,
+      "y_m": 313.0,
+      "priority": 2,
+      "dwell_min": 25,
+      "note": "CRISM detection, mean score 0.52 over 60 m"
+    },
+    {
+      "name": "Clay minerals exposure 2",
+      "x_m": 1441.0,
+      "y_m": 1087.0,
+      "priority": 2,
+      "dwell_min": 25,
+      "note": "CRISM detection, mean score 0.36 over 60 m"
+    },
+    {
+      "name": "Clay minerals exposure 3",
+      "x_m": 463.0,
+      "y_m": 355.0,
+      "priority": 2,
+      "dwell_min": 25,
+      "note": "CRISM detection, mean score 0.34 over 60 m"
+    },
+    {
+      "name": "Clay minerals exposure 4",
+      "x_m": 1445.0,
+      "y_m": 587.0,
+      "priority": 2,
+      "dwell_min": 25,
+      "note": "CRISM detection, mean score 0.32 over 60 m"
+    }
+  ],
+  "no_go": [],
+  "mission": {
+    "max_slope_deg": 15.0,
+    "hard_max_slope_deg": 25.0,
+    "walk_speed_flat_kmh": 2.0,
+    "eva_max_hours": 6.0,
+    "return_reserve_frac": 0.25,
+    "max_dose_msv": 1.0,
+    "max_distance_km": 8.0
+  }
+}
