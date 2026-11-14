@@ -1,3 +1,5 @@
+> Test map site and data format for the algorithms: see [DATA_CONTRACT.md](DATA_CONTRACT.md)
+
 # Algoritms First task set 
 
 # Astronaut Capabilities and Environmental Limits on Mars
