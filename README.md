@@ -21,6 +21,4 @@
 
 
 ## 4. Diff types of transport 
-* **What transport and its characterestics**Not permanent
-
-* Created and added radiation & temperature map, soil looseness, height map, demo of astronaut routing, previews of maps
+* **What transport and its characterestics**Not permanent  
