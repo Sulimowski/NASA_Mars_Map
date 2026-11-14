@@ -1,3 +1,9 @@
+from .astronaut_router import (STRATEGIES, EvaRouter, MissionPlan, RouteSegment, ShelterRoute,
+                               Strategy, find_nearest_shelter, plan_eva_mission, plan_pareto,
+                               route_segment)
+from .astronaut_terrain import AstronautTerrainModel, build_astronaut_terrain
+from .biomechanics import SuitParams
+from .environment import Environment
 from .site import (DATA_DIR, LAYER_SPEC, PROJECT_ROOT, TERRAIN_CLASSES,
                    MissionParams, Site, Target, slope_deg)
 
@@ -14,4 +20,7 @@ def load_stub() -> Site:
 
 
 __all__ = ["Site", "Target", "MissionParams", "LAYER_SPEC", "TERRAIN_CLASSES",
-           "slope_deg", "load_stub", "PROJECT_ROOT", "DATA_DIR", "STUB_DIR"]
+           "slope_deg", "load_stub", "PROJECT_ROOT", "DATA_DIR", "STUB_DIR", "Environment",
+           "AstronautTerrainModel", "build_astronaut_terrain", "SuitParams", "Strategy",
+           "STRATEGIES", "EvaRouter", "RouteSegment", "MissionPlan", "ShelterRoute",
+           "route_segment", "plan_eva_mission", "plan_pareto", "find_nearest_shelter"]
