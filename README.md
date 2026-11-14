@@ -93,8 +93,18 @@ Priority for the first target: A1 → A2 → A3 → A4 (elevation), then A6 (rad
 Works in `mars_map/analysis/` and `mars_map/fusion/`. Branch: `data/analysis`.
 Does not wait for A: uses the synthetic site and a small fake catalog until real data arrives.
 
-- [ ] **B1. Fake catalog fixture.** 3–4 regions (Gale, Jezero, two more) with invented product
-      footprints, written through A's schema. Lets B2/B3 start on day one.
+Run the whole of part B on fake data (stub → fake catalog → fusion → derived layers → `Site`):
+
+```bash
+.venv\Scripts\python scripts\build_fixture_site.py
+```
+
+It writes `data/fixture/` (catalog + degraded layers) and `data/gale_fixture/` (the fused site
+with `preview.png`), and prints how far the fused site is from the stub it was cut from.
+
+- [x] **B1. Fake catalog fixture.** `analysis/fixture.py`: 4 regions (Gale, Jezero, Coprates,
+      Arcadia) with invented product footprints, plus Gale layers cut from the stub and degraded
+      like real sources (HiRISE with a gap, CTX 20 m, MOLA 463 m, THEMIS 100 m, CRISM 18 m).
 - [ ] **B2. Region analyzer.** `analysis/regions.py`: for a region compute data completeness
       (which kinds exist, coverage %, best resolution), safety (walkable %, mean slope) and
       science (number of mineral / geologic units).
@@ -102,13 +112,15 @@ Does not wait for A: uses the synthetic site and a small fake catalog until real
 - [ ] **B3. Rating.** `analysis/rating.py`: weighted sum of normalized metrics, weights in a
       config file, result stored in `ratings`.
       *Done when:* changing a weight changes the ranking, and the top region is printed.
-- [ ] **B4. Fusion to one grid.** `fusion/stack.py`: take processed layers of a region, resample
-      to one grid, apply source priority (HiRISE > CTX > MOLA), build the `nodata` mask, derive
-      `slope` and `roughness`, return a valid `Site`.
-      *Done when:* `Site.validate()` passes and `scripts/check_reachability.py` runs on the result.
-- [ ] **B5. Derived layers.** `fusion/derived.py`: `cost` (weighted slope / rocks / sand),
-      `value` (from minerals and geology), hard masks (impassable, no-go).
-      Hard limits are masks, never weights.
+- [x] **B4. Fusion to one grid.** `fusion/stack.py`: `fuse_region()` takes the processed layers
+      of a region, picks the finest source per pixel (HiRISE > CTX > MOLA), blends coarse sources
+      in at the seam (no fake cliffs), builds `nodata` and `source_res`, derives `slope`,
+      `roughness`, `terrain_class`, returns a valid `Site`.
+      Tested on the fixture only; real data from A4 is the next check.
+- [x] **B5. Derived layers.** `fusion/derived.py`: `blocked` (hard mask: impassable, too steep,
+      no-go), `cost` (times slower than flat firm ground, `inf` where blocked), `value`
+      (science score for now). Weights in `CostWeights` are placeholders until `Alg` has real
+      speeds per terrain type.
 - [ ] **B6. Missing layer types in the stub.** Add `optical`, separate mineral layers and
       `geologic_unit` to the synthetic generator, so `Alg` and `GUI` can use them before real data.
       Coordinate with `Alg`: new layers must not break existing code.
