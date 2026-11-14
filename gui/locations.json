@@ -1,0 +1,29 @@
+{
+  "planet": "Mars",
+  "locations": [
+    {
+      "id": "gale_boxwork",
+      "name": "Gale Crater",
+      "place": "Boxwork ridges on Mount Sharp",
+      "lat": -4.812,
+      "lon": 137.383,
+      "status": "ready",
+      "summary": "A net of ridges left behind by groundwater on the slope of Mount Sharp. Curiosity has been working here since 2025.",
+      "detail": "The map covers 2 × 2 km at 2 m per pixel, with 458 m of relief. It has 31 data layers, 8 science targets and 3 walking plans.",
+      "viewer": "../data/gale_boxwork/view3d.html",
+      "plans": "samples/gale_boxwork/eva_plans.json"
+    }
+  ],
+  "features": [
+    { "name": "Olympus Mons", "lat": 18.65, "lon": -133.8 },
+    { "name": "Tharsis", "lat": -2.0, "lon": -112.0 },
+    { "name": "Valles Marineris", "lat": -13.9, "lon": -59.2 },
+    { "name": "Acidalia Planitia", "lat": 49.8, "lon": -20.7 },
+    { "name": "Arabia Terra", "lat": 21.0, "lon": 5.0 },
+    { "name": "Syrtis Major", "lat": 8.4, "lon": 69.5 },
+    { "name": "Hellas", "lat": -42.4, "lon": 70.5 },
+    { "name": "Utopia Planitia", "lat": 46.7, "lon": 117.5 },
+    { "name": "Elysium", "lat": 25.0, "lon": 147.2 },
+    { "name": "Argyre", "lat": -49.7, "lon": -44.0 }
+  ]
+}

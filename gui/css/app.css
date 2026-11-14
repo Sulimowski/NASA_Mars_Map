@@ -1,0 +1,234 @@
+/* Plain on purpose: text sits straight on the black, no panels, no cards, no pills.
+   Two typefaces: a Garamond for names (italic on the globe, as in an atlas) and a
+   Franklin for everything you read or tap. One colour besides white: the selected mark. */
+
+:root {
+  --bg: #050505;
+  --ink: #f4f1ec;
+  --ink-2: #a39d95;
+  --ink-3: #625d57;
+  --mark: #ff5a2b;
+  --edge: 28px;
+  --col: 372px;
+  --top: max(18px, env(safe-area-inset-top));
+  --bottom: max(26px, env(safe-area-inset-bottom));
+  --serif: "EB Garamond", Georgia, "Times New Roman", serif;
+  --sans: "Libre Franklin", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 16px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 1px solid var(--ink); outline-offset: 4px; }
+
+/* ---------- the planet ---------- */
+
+#globe {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0;
+  transition: opacity 1.2s;
+  cursor: grab;
+}
+#globe:active { cursor: grabbing; }
+body.ready #globe { opacity: 1; }
+
+/* Keeps the text readable when the planet is zoomed in under it. Not a panel: it has no edge. */
+.shade {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(5, 5, 5, 0.7), rgba(5, 5, 5, 0) 120px),
+    linear-gradient(90deg, rgba(5, 5, 5, 0.94) 0, rgba(5, 5, 5, 0.8) 24%, rgba(5, 5, 5, 0) 50%);
+}
+
+#labels { position: fixed; inset: 0; pointer-events: none; }
+
+/* A location: a small ring, the way a place is marked on a printed map. */
+.pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+}
+.pin-mark {
+  position: absolute;
+  left: -9px;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--ink);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.pin-mark::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+.pin.on .pin-mark { border-color: var(--mark); }
+.pin.on .pin-mark::after { background: var(--mark); }
+.pin-name {
+  position: absolute;
+  left: 18px;
+  top: 0;
+  transform: translateY(-50%);
+  padding: 12px 10px 12px 0;
+  font: italic 400 23px/1 var(--serif);
+  white-space: nowrap;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+/* Names of the big landforms, for orientation only. */
+.feat {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: italic 400 14px/1 var(--serif);
+  letter-spacing: 0.07em;
+  color: rgba(244, 241, 236, 0.66);
+  white-space: nowrap;
+  text-shadow: 0 0 5px rgba(0, 0, 0, 0.9);
+}
+.feat span { display: block; transform: translate(-50%, -50%); }
+
+/* ---------- top line ---------- */
+
+.top {
+  position: fixed;
+  top: var(--top);
+  left: var(--edge);
+  right: var(--edge);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  pointer-events: none;
+}
+.top > * { pointer-events: auto; }
+h1 { font: 500 15px/1 var(--sans); }
+
+.modes button {
+  padding: 12px 0 12px 26px;
+  font-size: 15px;
+  color: var(--ink-3);
+}
+.modes button.on {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 6px;
+}
+.modes button:disabled { cursor: default; }
+
+/* ---------- places ---------- */
+
+.places {
+  position: fixed;
+  left: var(--edge);
+  bottom: var(--bottom);
+  width: var(--col);
+  touch-action: pan-y;
+}
+#list { list-style: none; }
+.loc + .loc { margin-top: 10px; }
+
+.loc-head { display: block; width: 100%; padding: 6px 0; text-align: left; }
+.loc-name {
+  display: block;
+  font: 400 40px/1.02 var(--serif);
+  letter-spacing: -0.01em;
+  transition: font-size 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.loc.is-open .loc-name { font-size: 64px; }
+.loc-place { display: block; margin-top: 8px; font-size: 15px; line-height: 1.4; color: var(--ink-2); }
+
+.loc-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.loc-body > div { overflow: hidden; }
+.loc.is-open .loc-body { grid-template-rows: 1fr; }
+
+.loc-body p { margin-top: 16px; color: #dcd7d0; }
+.loc-body p + p { margin-top: 8px; color: var(--ink-2); }
+
+.go {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 14px 0;
+  font: 500 19px/1 var(--sans);
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 7px;
+}
+.go:active { color: var(--mark); }
+.go.off { color: var(--ink-3); text-decoration: none; pointer-events: none; }
+
+/* ---------- small print ---------- */
+
+.hint, .credit, .loading {
+  position: fixed;
+  right: var(--edge);
+  font-size: 13px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.credit { bottom: var(--bottom); }
+.hint { bottom: calc(var(--bottom) + 22px); color: var(--ink-2); transition: opacity 0.6s; }
+.hint.gone { opacity: 0; }
+.loading {
+  top: 50%;
+  left: calc(var(--edge) + var(--col));
+  text-align: center;
+  font: italic 400 20px/1 var(--serif);
+  color: var(--ink-2);
+  transition: opacity 0.6s;
+}
+body.ready .loading { opacity: 0; }
+
+/* ---------- portrait: the text goes under the planet ---------- */
+
+@media (orientation: portrait), (max-width: 760px) {
+  :root { --edge: 22px; }
+  .shade {
+    background:
+      linear-gradient(180deg, rgba(5, 5, 5, 0.7), rgba(5, 5, 5, 0) 120px),
+      linear-gradient(0deg, rgba(5, 5, 5, 0.96) 0, rgba(5, 5, 5, 0.85) 26%, rgba(5, 5, 5, 0) 52%);
+  }
+  .places { right: var(--edge); width: auto; max-width: 560px; }
+  .hint { right: auto; left: var(--edge); bottom: auto; top: calc(var(--top) + 44px); }
+  .loading { left: 0; top: 34%; }
+  .credit { display: none; }
+}
+
+@media (max-width: 480px) {
+  .loc-name { font-size: 34px; }
+  .loc.is-open .loc-name { font-size: 48px; }
+}

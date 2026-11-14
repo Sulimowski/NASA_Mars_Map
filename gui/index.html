@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#050505">
+  <title>Mars Survival Map</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;1,400&family=Libre+Franklin:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three-0.160.0.module.min.js" } }</script>
+</head>
+<body>
+  <canvas id="globe" aria-label="Mars globe"></canvas>
+  <div class="shade"></div>
+  <div id="labels"></div>
+
+  <header class="top">
+    <h1>Mars Survival Map</h1>
+    <nav class="modes" aria-label="Display mode">
+      <button class="on" aria-pressed="true">iPad</button>
+      <button disabled>Helmet</button>
+    </nav>
+  </header>
+
+  <main class="places" id="side">
+    <ul id="list"></ul>
+  </main>
+
+  <p class="hint" id="hint">Drag to turn the planet, pinch to zoom.</p>
+  <p class="loading">Loading Mars</p>
+  <p class="credit">Viking orbiter mosaic, NASA / USGS</p>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
