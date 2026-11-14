@@ -14,3 +14,7 @@
 * **Maximum Distance:** How far can an astronaut travel on foot during a single Extravehicular Activity (EVA)?
 * **Continuous Walking Time:** How long can an astronaut walk non-stop without resting, limited by physical fatigue, oxygen supply, and battery life?
 * **Terrain Impact on Speed:** How do different types of Martian terrain (e.g., loose regolith/sand, rocky fields, steep slopes, and craters) affect walking speed and travel duration?
+
+
+## 4. Diff types of transport 
+* **What transport and its characterestics**Not permanent  
