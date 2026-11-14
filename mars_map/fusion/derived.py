@@ -47,6 +47,49 @@ def blocked_mask(site: Site) -> np.ndarray:
     return (L["terrain_class"] == 3) | (L["slope"] > m.hard_max_slope_deg) | no_go_mask(site)
 
 
+def walkable_mask(site: Site) -> np.ndarray:
+    """Cells a suited crew can cross comfortably: not blocked and within `max_slope_deg`."""
+    return ~blocked_mask(site) & (site.layers["slope"] <= site.mission.max_slope_deg)
+
+
+def snap_to(mask: np.ndarray, site: Site, x_m: float, y_m: float,
+            max_m: float = 20.0) -> tuple[float, float] | None:
+    """Nearest cell of `mask` within `max_m` of a point, as (x_m, y_m). None if there is none."""
+    r0, c0 = site.to_pixel(x_m, y_m)
+    k = int(np.ceil(max_m / site.resolution_m))
+    ra, rb = max(r0 - k, 0), min(r0 + k + 1, mask.shape[0])
+    ca, cb = max(c0 - k, 0), min(c0 + k + 1, mask.shape[1])
+    rows, cols = np.nonzero(mask[ra:rb, ca:cb])
+    if rows.size == 0:
+        return None
+    d = np.hypot(rows + ra - r0, cols + ca - c0)
+    i = int(d.argmin())
+    if d[i] * site.resolution_m > max_m:
+        return None
+    return site.to_metres(int(rows[i] + ra), int(cols[i] + ca))
+
+
+def reachable_mask(site: Site, x_m: float, y_m: float) -> np.ndarray:
+    """Everything connected to a point through walkable cells (4-neighbour flood fill)."""
+    from collections import deque
+
+    walk = walkable_mask(site)
+    seed = snap_to(walk, site, x_m, y_m)
+    seen = np.zeros(walk.shape, bool)
+    if seed is None:
+        return seen
+    rows, cols = walk.shape
+    q = deque([site.to_pixel(*seed)])
+    seen[q[0]] = True
+    while q:
+        r, c = q.popleft()
+        for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+            if 0 <= nr < rows and 0 <= nc < cols and walk[nr, nc] and not seen[nr, nc]:
+                seen[nr, nc] = True
+                q.append((nr, nc))
+    return seen
+
+
 def cost_layer(site: Site, w: CostWeights | None = None) -> np.ndarray:
     w = w or CostWeights()
     L, m = site.layers, site.mission

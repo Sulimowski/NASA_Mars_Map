@@ -145,19 +145,23 @@ def fetch_product(db: sqlite3.Connection, product: Product, raw_dir: str | Path 
 
 # --- region-sized crops of remote rasters -------------------------------------------
 
-def window_path(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = RAW_DIR) -> Path:
-    """data/raw/<source>/<stem>__<region>.tif"""
+def window_path(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = RAW_DIR,
+                band: int = 1) -> Path:
+    """data/raw/<source>/<stem>__<region>.tif (band 1) or <stem>__b<band>__<region>.tif"""
     stem = url_filename(url).rsplit(".", 1)[0]
-    return Path(raw_dir) / source / f"{stem}__{grid.name}.tif"
+    tag = "" if band == 1 else f"__b{band}"
+    return Path(raw_dir) / source / f"{stem}{tag}__{grid.name}.tif"
 
 
 def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = RAW_DIR,
-                 margin_px: int = 4) -> Path | None:
+                 margin_px: int = 4, band: int = 1) -> Path | None:
     """Save the part of a remote (or local) raster that covers `grid`, in its native grid.
 
     Pixels are untouched: same CRS, resolution, dtype and nodata as the original,
     only cropped (plus `margin_px` source pixels so resampling has neighbours).
-    Returns None when the raster does not reach the region. Cached like `fetch`.
+    `band` picks one band of a multi-band raster (colour images); the crop is always
+    a single-band file. Returns None when the raster does not reach the region.
+    Cached like `fetch`.
     """
     import rasterio
     from rasterio.crs import CRS
@@ -165,7 +169,7 @@ def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = 
     from rasterio.windows import Window, from_bounds
     from rasterio.windows import transform as window_transform
 
-    dest = window_path(url, source, grid, raw_dir)
+    dest = window_path(url, source, grid, raw_dir, band)
     if dest.exists():
         return dest
     x0, y0 = grid.origin
@@ -173,7 +177,7 @@ def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = 
     remote = url.startswith(("http://", "https://"))
     env = rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_HTTP_USERAGENT=USER_AGENT,
                        GDAL_HTTP_MAX_RETRY="3", GDAL_HTTP_RETRY_DELAY="2",
-                       CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.tiff,.img,.IMG,.jp2,.JP2")
+                       CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.tiff,.img,.IMG,.jp2,.JP2,.cub")
     try:
         with env, rasterio.open(("/vsicurl/" + url) if remote else url) as src:
             bounds = transform_bounds(CRS.from_proj4(grid.proj4), src.crs, *region, densify_pts=21)
@@ -185,7 +189,7 @@ def fetch_window(url: str, source: str, grid: RegionGrid, raw_dir: str | Path = 
             if c1 <= c0 or r1 <= r0:
                 return None
             win = Window(c0, r0, c1 - c0, r1 - r0)
-            data = src.read(1, window=win)
+            data = src.read(band, window=win)
             profile = dict(driver="GTiff", height=data.shape[0], width=data.shape[1], count=1,
                            dtype=data.dtype, crs=src.crs, nodata=src.nodata,
                            transform=window_transform(win, src.transform), compress="deflate")

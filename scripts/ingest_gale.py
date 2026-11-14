@@ -18,12 +18,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mars_map.catalog import add_region, connect, find_products  # noqa: E402
-from mars_map.grid import GALE_MOUNT_SHARP, read_layer  # noqa: E402
+from mars_map.grid import REGIONS, read_layer  # noqa: E402
 from mars_map.ingest.fetch import FetchError, fetch_product, fetch_window  # noqa: E402
 from mars_map.ingest.global_layers import ingest_global_layers  # noqa: E402
 from mars_map.ingest.loaders import load_catalog  # noqa: E402
 from mars_map.ingest.normalize import ELEVATION_RANGE_M, normalize  # noqa: E402
+from mars_map.ingest.minerals import ingest_minerals, load_ode_crism  # noqa: E402
+from mars_map.ingest.optical import ingest_optical, load_ode_hirise_ortho  # noqa: E402
 from mars_map.ingest.series import load_rad, load_rems  # noqa: E402
+from mars_map.ingest.thermal import ingest_thermal_inertia  # noqa: E402
 
 
 def pick_cover(products, bbox, max_n):
@@ -92,13 +95,14 @@ def main():
     ap.add_argument("--max-items", type=int, default=200, help="max items per STAC collection")
     ap.add_argument("--rad-sols", default="453-457", help="RAD sols, e.g. 453-482 (18 MB per sol), '' = skip")
     ap.add_argument("--skip-catalog", action="store_true", help="reuse the catalog as it is")
+    ap.add_argument("--region", default="gale_boxwork", choices=sorted(REGIONS))
     args = ap.parse_args()
 
-    grid = GALE_MOUNT_SHARP
+    grid = REGIONS[args.region]
     db = connect()
-    add_region(db, grid, "Curiosity site, Mount Sharp foothills")
+    add_region(db, grid)
 
-    print(f"[1/4] catalog over {grid.name} {tuple(round(v, 3) for v in grid.bounds_lonlat)}")
+    print(f"[1/7] catalog over {grid.name} {tuple(round(v, 3) for v in grid.bounds_lonlat)}")
     if not args.skip_catalog:
         load_catalog(db, grid.bounds_lonlat, max_items=args.max_items)
     dtms = find_products(db, grid.bounds_lonlat, "dtm")
@@ -106,17 +110,32 @@ def main():
     for p in dtms[:4]:
         print(f"    {p.source:11s} {p.resolution_m:5.1f} m  cover {p.coverage:4.0%}  {p.url}")
 
-    print("[2/4] elevation")
+    print("[2/7] elevation")
     ingest_dtm(db, grid, "hirise_dtm", args.max_hirise, args.full)
     ingest_dtm(db, grid, "ctx_dtm", 1, args.full)
 
-    print("[3/4] global coarse layers")
+    print("[3/7] global coarse layers")
     ingest_global_layers(db, grid)
 
-    print("[4/4] time series (Curiosity)")
+    print("[4/7] time series (Curiosity)")
     for name, n in load_rems(db, grid.name).items():
         print(f"  REMS {name}: {n} sols")
     load_rad(db, grid.name, parse_sols(args.rad_sols))
+
+    print("[5/7] minerals (CRISM)")
+    if not args.skip_catalog:
+        print(f"  catalog ode:crism: {load_ode_crism(db, grid.bounds_lonlat)} products")
+    for layer in ingest_minerals(db, grid):
+        print(f"  {layer}: ok")
+
+    print("[6/7] optical (HiRISE orthoimages)")
+    if not args.skip_catalog:
+        print(f"  catalog ode:hirise_ortho: {load_ode_hirise_ortho(db, grid.bounds_lonlat)} products")
+    for layer in ingest_optical(db, grid):
+        print(f"  {layer}: ok")
+
+    print("[7/7] thermal inertia (THEMIS, quantitative)")
+    ingest_thermal_inertia(db, grid)
 
     print("\nprocessed layers:")
     for name, src, unit, res, path, cov in db.execute(

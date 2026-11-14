@@ -59,6 +59,14 @@ class RegionGrid:
         return (self.center_lon - dlon, self.center_lat - dlat,
                 self.center_lon + dlon, self.center_lat + dlat)
 
+    def lonlat_to_xy(self, lon: float, lat: float) -> tuple[float, float]:
+        """Lon/lat (degrees, east-positive) -> site metres (x east, y south from the NW corner)."""
+        k = MARS_SPHERE_RADIUS_M * math.pi / 180.0
+        dlon = (lon - self.center_lon + 180.0) % 360.0 - 180.0
+        x = dlon * k * math.cos(math.radians(self.center_lat)) + self.size_m / 2
+        y = self.size_m / 2 - (lat - self.center_lat) * k
+        return x, y
+
     def transform(self):
         from rasterio.transform import from_origin
         x0, y0 = self.origin
@@ -111,6 +119,17 @@ def coverage_frac(array: np.ndarray) -> float:
     return float(np.isfinite(array).mean())
 
 
-# Regions we work with. Coordinates are approximate until the analyzer picks exact ones.
+# Regions we work with.
+#
+# gale_boxwork: the boxwork ridges on Mount Sharp. Centre taken from Curiosity's own track
+# (MSL waypoints feed): the rover worked here from about sol 4500 to 5070, standing at
+# -4.804..-4.814 N, 137.380..137.382 E during sols 4600-4900.
+GALE_BOXWORK = RegionGrid("gale_boxwork", center_lat=-4.812, center_lon=137.383,
+                          size_m=2000.0, resolution_m=2.0)
+
+# gale_mount_sharp: 3.5 km north of the boxwork (Glen Torridon clay unit, Curiosity sols
+# 2595-3700). The first test region and the grid of the synthetic stub; kept for those.
 GALE_MOUNT_SHARP = RegionGrid("gale_mount_sharp", center_lat=-4.75, center_lon=137.38,
                               size_m=2000.0, resolution_m=2.0)
+
+REGIONS = {g.name: g for g in (GALE_BOXWORK, GALE_MOUNT_SHARP)}

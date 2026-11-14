@@ -195,9 +195,26 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
         slope = slope_deg(elev, grid.resolution_m)
 
         # Optional layers the catalog has but the contract does not require
-        # (albedo, THEMIS brightness, minerals...): carried through unchanged.
-        extras = {name: _fill(merge_sources(fs, grid.shape)[0], 0.0)
+        # (albedo, THEMIS brightness, minerals, colour...): carried through unchanged.
+        # Unlike the core layers they are NOT filled: where a source has no data the
+        # value stays NaN, so nobody mistakes a guess for a measurement.
+        extras = {name: merge_sources(fs, grid.shape)[0]
                   for name, fs in files.items() if name not in CORE_LAYERS}
+
+        # Core layers nobody measured directly are interpreted from what we do have.
+        from . import science
+        derived_notes = []
+        if "rock_abundance" not in files and "optical_texture" in extras:
+            rock = science.rock_proxy(extras["optical_texture"])
+            derived_notes.append("rock_abundance = texture proxy")
+        if "science_score" not in files:
+            native = min((fs[0].native_res_m for n, fs in files.items() if n in science.MINERALS),
+                         default=grid.resolution_m)
+            found = science.science_from_minerals(extras, int(round(native / grid.resolution_m)))
+            if found is not None:
+                sci, extras["mineral_dominant"] = found
+                derived_notes.append("science_score = CRISM minerals")
+        extras["ridge_index"] = science.ridge_index(elev, grid.resolution_m)
 
         series = _common_series(db, region)
         used = sorted({f.source for fs in files.values() for f in fs})
@@ -206,7 +223,8 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
 
     site = Site(
         name=grid.name,
-        source="fused from: " + ", ".join(used),
+        source="fused from: " + ", ".join(used) + (
+            " | " + "; ".join(derived_notes) if derived_notes else ""),
         resolution_m=grid.resolution_m,
         center_lat=grid.center_lat,
         center_lon=grid.center_lon,

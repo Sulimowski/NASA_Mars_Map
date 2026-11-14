@@ -1,55 +1,143 @@
 # Data branch — data extraction and the multi-layer map
 
-Goal of this branch: turn raw NASA data into one `Site` object (the format the `Alg` branch
-already works with, see `DATA_CONTRACT.md` on `Alg`).
+This branch turns raw NASA data into one `Site` object: a stack of map layers on one grid,
+plus weather and radiation series, a base and science targets. It is the format the `Alg`
+branch already works with (see [`DATA_CONTRACT.md`](DATA_CONTRACT.md)).
 
-**First target (from `main`):** a real `Site` for Gale crater with geometry (elevation), radiation
-and useful minerals, so `Alg` can run point-to-point routing with stops and `GUI` can show it in 3D.
+**Status (2026-11-14):** the first target from `main` is met on real data. There is a real
+`Site` for the boxwork area of Gale crater with elevation, radiation and minerals, ready for
+`Alg` (routing) and `GUI` (3D view).
+
+## Quick start
+
+```bash
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python scripts\ingest_gale.py --rad-sols 4640-4669
+.venv\Scripts\python scripts\build_gale_site.py
+```
+
+- `ingest_gale.py` downloads real data for the region: about 650 MB of traffic (540 MB of it
+  is radiation, 18 MB per sol, deleted after parsing), 100–200 MB stays in `data/raw/`.
+  It took about 15 minutes on our connection. Everything is cached: a second run downloads
+  nothing. Without `--rad-sols` it loads only 5 early sols, which fall into a weather gap.
+- `build_gale_site.py` fuses it into `data/gale_boxwork/` (`layers.npz`, `site.json`,
+  `preview.png`). Takes about a minute.
+
+```python
+from mars_map import Site
+
+site = Site.load("data/gale_boxwork")
+site.layers["elevation"]          # 1000 x 1000, metres
+site.layers["cost"]               # how many times slower than flat firm ground, inf = blocked
+site.series["radiation_msv_per_sol"]
+site.start, site.targets          # base and science stops, in site metres
+```
+
+No internet? `scripts\make_stub_site.py` makes the synthetic site `data/gale_stub/` in 3 seconds.
+
+## The real site: `gale_boxwork`
+
+Centre -4.812 N, 137.383 E, 2 × 2 km at 2 m per pixel, on the flank of Mount Sharp.
+The centre comes from Curiosity's own track: the rover worked on the boxwork ridges here in
+sols 4500–5070. Terrain is hard: 458 m of relief, median slope 12.7°, 17.5 % of cells blocked.
+
+### Layers by data type
+
+| Data type | Layers | Source | Native resolution |
+|---|---|---|---|
+| Topographic | `elevation`, `slope`, `roughness`, `ridge_index` | HiRISE DTM (CTX, HRSC, MOLA as fallback) | 1 m, covers 100 % |
+| Optical | `optical`, `optical_texture` | HiRISE orthoimage, grayscale | 1 m, covers 100 % |
+| Optical, colour | `optical_ir`, `optical_red`, `optical_bg` | HiRISE orthoimage, colour strip | 1 m, covers 43 % |
+| Spectral / chemical | `mineral_sulfate`, `mineral_sulfate_mono`, `mineral_clay`, `mineral_hydration`, `mineral_silica`, `mineral_hematite`, `mineral_olivine`, `mineral_pyroxene`, `mineral_dominant`, `science_score` | CRISM MTRDR, 3 scenes | 18 m |
+| Thermal | `thermal_inertia` (physical units) | THEMIS quantitative mosaic | 100 m |
+| Thermal, pictures | `themis_day_ir`, `themis_night_ir` (8-bit brightness), `albedo` | THEMIS, TES | 100 m, 7.4 km |
+| Radiation | series `radiation_msv_per_sol`, `radiation_dose_ugy_per_sol` | Curiosity RAD | one value per sol |
+| Atmospheric | series `temp_min_c`, `temp_max_c`, `ground_temp_min_c`, `ground_temp_max_c`, `pressure_pa` | Curiosity REMS | one value per sol |
+| For routing | `terrain_class`, `rock_abundance`, `blocked`, `cost`, `value`, `reachable`, `nodata`, `source_res` | fusion | grid |
+
+Series cover sols 4640–4669 (30 sols, while Curiosity stood on the boxwork). Dose is
+0.45–0.50 mSv per sol.
+
+### Base and targets
+
+The base is the flattest 40 m patch inside the area a crew can walk from the rover's proven
+ground without exceeding the comfortable slope (15°). That area is 33.5 % of the region.
+All 8 targets are inside it.
+
+| Priority | Target | Position, m (x east, y south) | Why |
+|---|---|---|---|
+| — | Base | 315, 1031 | flattest reachable patch |
+| 1 | Curiosity stop, sol 4752 | 883, 765 | rover worked here 37 sols |
+| 1 | Curiosity stop, sol 5045 | 1273, 1751 | rover worked here 24 sols |
+| 2 | Curiosity stop, sol 4868 | 923, 1135 | rover worked here 21 sols |
+| 2 | Curiosity stop, sol 5021 | 1345, 1779 | rover worked here 20 sols |
+| 2 | Hydrated sulfate exposure | 1385, 1441 | strongest CRISM detection (score 0.97) |
+| 2 | Hydrated minerals exposure | 1543, 101 | CRISM, bound water (score 0.68) |
+| 2 | Hydrated minerals exposure | 1583, 531 | CRISM, bound water, weak (score 0.25) |
+| 2 | Hydrated silica / Al-OH exposure | 1341, 1181 | CRISM, weak (score 0.18) |
+
+Each Curiosity stop carries, in `target.note`, a link to a photo the rover took on the spot:
+what an astronaut would see there.
+
+### Limits you must know
+
+- **`rock_abundance` is a proxy, not a measurement.** It is the local contrast of the 1 m
+  image, scaled so the roughest 1 % of the region reads 0.5. It also lights up on cliff edges
+  and rock layering. It ranks ground from smooth to rugged; it does not count rocks.
+- **No sand class.** Thermal inertia is 300–462 over the whole region (rocky ground), and at
+  100 m per pixel it cannot see the sand ripples that are visible in the image.
+- **Mineral indices are unitless and noisy.** A cell counts as a detection above median + 3
+  sigma after smoothing over one CRISM pixel; 3.7 % of the region passes. Sulfates, hydrated
+  minerals and hydrated silica are detected. Hematite, olivine, pyroxene and clay are not.
+- **Optional layers can contain `NaN`** where their source has no data (the colour bands on
+  57 % of the region). Core layers are always filled, and `nodata` says where they are coarse.
+- **Radiation is one number per sol** for the whole region. There is no terrain shielding.
+- **No dust opacity and no wind.** The public REMS feed does not carry them.
+- `MissionParams` (slope limits, speed, EVA time) and `CostWeights` are placeholders until
+  `Alg` has real numbers.
 
 ## Pipeline
 
 ```
-catalog of everything (metadata only)
+catalog (metadata only: what exists, footprints, URLs)
         │
         ▼
-region analyzer ── rating ──▶ chosen region
+fetch only the region ──▶ normalize to the region grid ──▶ processed layers + series
         │
         ▼
-download only that region ──▶ normalize to one grid ──▶ fuse ──▶ Site
+fuse (finest source per pixel) ──▶ interpret (terrain, minerals, cost) ──▶ base + targets ──▶ Site
 ```
 
 Rules:
-- We do **not** download all of Mars. The catalog holds metadata (footprint, resolution, URL)
-  for everything; rasters are downloaded only for chosen regions and cached.
+- We do **not** download all of Mars. The catalog holds metadata for everything; rasters are
+  read only over chosen regions (often just the pixels we need) and cached.
 - Rasters live as files, the database only stores where they are:
-  `data/raw/` (as downloaded), `data/processed/<region>/<layer>.tif`, `data/catalog.sqlite`.
+  `data/raw/` (as downloaded), `data/processed/<region>/<layer>__<source>.tif`, `data/catalog.sqlite`.
 - `data/` is never committed.
 
-## Step 0 — shared agreements (done)
+Choosing the region automatically (analyzer + rating, tasks B2 and B3) is not built yet.
+`gale_boxwork` was chosen by hand from Curiosity's track.
 
-- [x] Shared contract (`mars_map/site.py`, `DATA_CONTRACT.md`, stub generator) copied from `Alg`.
-      `site.py` is changed only by agreement with `Alg`.
-- [x] Catalog schema: [`mars_map/catalog/schema.sql`](mars_map/catalog/schema.sql).
-- [x] Processed layer format and region grid: [`mars_map/grid.py`](mars_map/grid.py).
-- [x] `rasterio` and `geopandas` added to `requirements.txt`.
+## Shared agreements
 
-Check that it all works on your machine:
+- `Site` contract: [`mars_map/site.py`](mars_map/site.py), described in
+  [`DATA_CONTRACT.md`](DATA_CONTRACT.md). Shared with `Alg`, changed only by agreement.
+- Catalog schema: [`mars_map/catalog/schema.sql`](mars_map/catalog/schema.sql).
+- Region grid and processed layer format: [`mars_map/grid.py`](mars_map/grid.py).
 
-```bash
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python scripts\check_step0.py
-```
+Check them on your machine: `.venv\Scripts\python scripts\check_step0.py`
 
 ### Catalog tables
 
 | Table | What it holds |
 |---|---|
-| `sources` | instrument + provider (HiRISE DTM from USGS, TES from Trek, …) |
+| `sources` | instrument + provider (HiRISE DTM from PDS ODE, CRISM, THEMIS, …) |
 | `products` | everything that exists remotely: kind, resolution, footprint, bbox, download URL |
-| `regions` | candidate areas: centre, size, resolution (this defines the region grid) |
+| `regions` | areas we work on: centre, size, resolution (this defines the region grid) |
 | `layers` | processed rasters of a region: layer name, unit, source, file path, coverage |
 | `series` | per-sol values of a region (radiation, weather) |
-| `ratings` | region analyzer output, one row per metric |
+| `ratings` | region analyzer output, one row per metric (empty until B2/B3) |
 
 Longitudes are east-positive in -180..180, latitudes planetocentric.
 
@@ -62,168 +150,120 @@ Longitudes are east-positive in -180..180, latitudes planetocentric.
 - SI units. Missing data = `NaN` for float layers, `255` for `uint8` layers.
 - Always use `write_layer()` / `read_layer()` from `mars_map/grid.py`, never open the files directly.
 - The same layer may exist from several sources (`elevation__hirise_dtm.tif`,
-  `elevation__mola.tif`); fusion picks the best one per pixel.
+  `elevation__mola.tif`); fusion picks the finest one per pixel.
 
-## A — ingestion (parsers and the database)
+### Regions
 
-Works in `mars_map/catalog/` and `mars_map/ingest/`. Branch: `data/ingest`.
+Defined in `mars_map/grid.py`, both scripts take `--region`:
 
-Check part A without internet (fake products, a local web server, a generated DTM):
+- `gale_boxwork` (default): the real site described above.
+- `gale_mount_sharp`: -4.75 N, 137.38 E, 3.5 km north of the boxwork (Curiosity sols
+  2595–3700). The first test region; the synthetic stub and the fixture use its grid.
+
+## Part A — ingestion (`mars_map/catalog/`, `mars_map/ingest/`)
+
+Offline check (fake products, a local web server, a generated DTM):
 
 ```bash
 .venv\Scripts\python scripts\check_ingest.py
 ```
 
-Run part A on real data for Gale (catalog → fetch → normalize → global layers → series).
-About 100 MB of traffic (mostly RAD, 18 MB per sol), 1–2 minutes. Everything is cached, a
-second run downloads nothing:
+| Module | What it does |
+|---|---|
+| [`catalog/db.py`](mars_map/catalog/db.py) | `connect()`, `add_source`, `add_products`, `find_products(bbox, kind)` (finest first, with `coverage` of the bbox by the exact footprint), `add_layer`, `add_region`, `add_series` |
+| [`ingest/loaders.py`](mars_map/ingest/loaders.py) | `load_catalog(db, bbox)`: HiRISE DTMs from PDS ODE; CTX DTMs, HiRISE images, THEMIS mosaics from USGS STAC |
+| [`ingest/fetch.py`](mars_map/ingest/fetch.py) | `fetch_product()` whole file with resume; `fetch_window()` reads only the pixels over a region from a remote raster (this is how 2–23 GB mosaics are used) |
+| [`ingest/normalize.py`](mars_map/ingest/normalize.py) | `normalize()`: reproject to the region grid, nodata → NaN, units, mosaic of several products with the height offset between DTMs removed, register in `layers` |
+| [`ingest/global_layers.py`](mars_map/ingest/global_layers.py) | MOLA 463 m and HRSC+MOLA 200 m elevation, THEMIS day/night IR, TES albedo |
+| [`ingest/series.py`](mars_map/ingest/series.py) | REMS weather for every mission sol; RAD dose per requested sol (`--rad-sols`) |
+| [`ingest/minerals.py`](mars_map/ingest/minerals.py) | CRISM summary-parameter cubes: downloads only the 8 bands we use (2 MB each instead of a 130 MB cube) |
+| [`ingest/optical.py`](mars_map/ingest/optical.py) | HiRISE orthoimages that ship with the DTMs: grayscale, colour bands, and `optical_texture` computed at the native 1 m |
+| [`ingest/thermal.py`](mars_map/ingest/thermal.py) | THEMIS quantitative thermal inertia: picks the 30° × 60° tile, reads only the region |
+| [`ingest/rover.py`](mars_map/ingest/rover.py) | Curiosity waypoints (track, long stops) and a link to a photo taken at a stop |
 
-```bash
-.venv\Scripts\python scripts\ingest_gale.py
-```
+### Sources (all verified 2026-11)
 
-It writes `data/catalog.sqlite`, `data/raw/<source>/` and `data/processed/gale_mount_sharp/`.
-
-- [x] **A1. Catalog module.** [`mars_map/catalog/db.py`](mars_map/catalog/db.py): `connect()`
-      creates the SQLite file from `schema.sql`; `add_source`, `add_products`,
-      `find_products(bbox, kind)`, `add_layer`, plus `add_region`, `add_series`, `set_local_path`.
-      `find_products` returns products finest first, each with `coverage` = share of the bbox
-      inside its exact footprint. Re-adding a product keeps its `local_path`.
-- [x] **A2. Catalog loader.** [`mars_map/ingest/loaders.py`](mars_map/ingest/loaders.py):
-      `load_catalog(db, bbox)`. Both APIs were verified to return footprints and download URLs
-      (working queries below). `find_products(gale_bbox, "dtm")` returns real HiRISE and CTX DTMs.
-- [x] **A3. Fetcher with cache.** [`mars_map/ingest/fetch.py`](mars_map/ingest/fetch.py):
-      `fetch_product()` downloads a whole product into `data/raw/<source>/` through a `.part`
-      file, resumes a broken download with an HTTP Range request, raises `FetchError` otherwise.
-      `fetch_window()` reads only the pixels over a region from a remote raster and caches the
-      crop, which is how the global mosaics (2–23 GB) and 500 MB DTM strips are used.
-- [x] **A4. Normalizer.** [`mars_map/ingest/normalize.py`](mars_map/ingest/normalize.py):
-      `normalize()` reprojects to the region grid, sets nodata to NaN, converts units, mosaics
-      several products of one source (removing the constant height offset between DTMs),
-      writes `data/processed/<region>/<layer>__<source>.tif` and registers it in `layers`.
-- [ ] **A5. Global coarse layers.** [`mars_map/ingest/global_layers.py`](mars_map/ingest/global_layers.py).
-      Done: MOLA 463 m and HRSC+MOLA 200 m elevation, THEMIS day/night IR 100 m (8-bit
-      brightness, not kelvin), TES albedo. **Missing:** TES thermal inertia and the TES mineral
-      maps, no working direct URL found yet.
-- [x] **A6. Time series.** [`mars_map/ingest/series.py`](mars_map/ingest/series.py):
-      REMS weather for every mission sol (`temp_min_c`, `temp_max_c`, `ground_temp_min_c`,
-      `ground_temp_max_c`, `pressure_pa`) and RAD dose per sol (`radiation_dose_ugy_per_sol`
-      measured, `radiation_msv_per_sol` = measured × quality factor 3.05). RAD is 18 MB per
-      sol, so sols are loaded on request: `ingest_gale.py --rad-sols 453-482`.
-      The REMS feed has no dust opacity and no wind (`dust_opacity_tau`, `wind_max_ms`).
-
-### Working queries (verified 2026-11)
-
-PDS ODE REST, HiRISE DTMs over a box. Longitudes are east 0..360. `results=fmp` adds the file
-list (`Product_files`, the `.IMG` with `Type = Product` is the DTM) and the footprint
-(`Footprint_C0_geometry`, WKT):
-
-```
-https://oderest.rsl.wustl.edu/live2/?query=products&target=mars&results=fmp&output=JSON&ihid=MRO&iid=HIRISE&pt=DTM&westlon=137.346&eastlon=137.414&minlat=-4.767&maxlat=-4.733&limit=100
-```
-
-USGS STAC, items of a collection over a box. Longitudes are -180..180, `geometry` is the
-footprint, `assets.<key>.href` is a cloud-optimized GeoTIFF, pages are chained by the `next` link:
-
-```
-https://stac.astrogeology.usgs.gov/api/collections/mro_ctx_controlled_usgs_dtms/items?bbox=137.346,-4.767,137.414,-4.733&limit=100
-```
-
-| Source | Provider | Query | File used |
+| Source | Provider | Where | File used |
 |---|---|---|---|
-| `hirise_dtm` | ODE | `ihid=MRO&iid=HIRISE&pt=DTM` | `DTEEC_*.IMG`, 1 m |
-| `ctx_dtm` | STAC | `mro_ctx_controlled_usgs_dtms` | asset `geoid_adjusted_dem`, 20 m |
-| `ctx_optical` | STAC | same collection | asset `orthoimage` |
-| `hirise_optical` | STAC | `mro_hirise_uncontrolled_observations` | asset `image`, 0.25 m |
-| `themis` | STAC | `mo_themis_controlled_mosaics` | asset `image`, 100 m |
+| `hirise_dtm` | PDS ODE | `ihid=MRO&iid=HIRISE&pt=DTM` | `DTEEC_*.IMG`, 1 m |
+| `hirise_ortho`, `hirise_color` | PDS ODE | file list of the same DTM products | `*_RED_C_01_ORTHO.JP2`, `*_IRB_C_01_ORTHO.JP2`, 1 m |
+| `crism` | PDS ODE | `ihid=MRO&iid=CRISM&pt=MTRDR` | `*_su*j_mtr3.img` + `.hdr`, 18 m |
+| `ctx_dtm`, `ctx_optical` | USGS STAC | `mro_ctx_controlled_usgs_dtms` | assets `geoid_adjusted_dem` (20 m), `orthoimage` |
+| `hirise_optical` | USGS STAC | `mro_hirise_uncontrolled_observations` | asset `image`, 0.25 m (catalogued, not used) |
+| `themis` | USGS STAC | `mo_themis_controlled_mosaics` | asset `image`, 100 m, 8-bit |
+| `themis_ti` | USGS Astropedia (S3) | `THEMIS_TI_Mosaic_Quant_<tile>_100mpp.cub` | ISIS cube, 100 m, latitudes -60..60 |
+| `mola`, `hrsc_mola`, `tes_albedo` | USGS planetarymaps | global mosaics | GeoTIFF |
+| `rems` | mars.nasa.gov | weather feed `?feed=weather&category=msl` | JSON |
+| `rad` | PDS PPI | `MSL-M-RAD-3-RDR-V1.0` | one text file per sol, 18 MB |
+| rover track | mars.nasa.gov | `mmgis-maps/MSL/Layers/json/MSL_waypoints.json` | GeoJSON |
+| rover photos | mars.nasa.gov | `api/v1/raw_image_items/?condition_2=<sol>:sol:in` | JSON with image links |
+
+Working query examples:
+
+```
+https://oderest.rsl.wustl.edu/live2/?query=products&target=mars&results=fmp&output=JSON&ihid=MRO&iid=HIRISE&pt=DTM&westlon=137.366&eastlon=137.400&minlat=-4.829&maxlat=-4.795&limit=100
+https://stac.astrogeology.usgs.gov/api/collections/mro_ctx_controlled_usgs_dtms/items?bbox=137.366,-4.829,137.400,-4.795&limit=100
+```
+
+In ODE longitudes are east 0..360; `results=fmp` adds the file list (`Product_files`) and the
+footprint (`Footprint_C0_geometry`, WKT). In STAC longitudes are -180..180 and pages are chained
+by the `next` link.
 
 Things to know:
+- **TLS on PDS ODE.** Its server does not send the intermediate certificate, so plain Python
+  fails with `CERTIFICATE_VERIFY_FAILED` on a clean machine. `mars_map/ingest/__init__.py`
+  switches verification to the operating system's trust store (`truststore`). Verification
+  stays on.
 - Gale has thousands of CTX stereo-pair DTMs, so the STAC loader stops at `max_items` (200).
 - STAC also lists HiRISE DTMs (`mro_hirise_socet_dtms`), but some of its links are dead (404).
   We take HiRISE DTMs from ODE.
-- Three HiRISE DTMs cover the Gale region completely; the pipeline uses one. Where one is not
-  enough, the normalizer mosaics several.
-- All elevations (HiRISE, CTX geoid-adjusted, MOLA) are metres above the MOLA areoid, but the
-  sources still disagree by a constant: over Gale, median difference to HiRISE is -5 m for CTX,
-  -11 m for HRSC+MOLA, -51 m for MOLA. Fusion has to remove it at the seams.
-- Open for meeting point 2: `fuse_region` refuses series that cover different sols, and real
-  series do (REMS has ~4700 sols, RAD only the sols that were requested).
+- All elevations are metres above the MOLA areoid, but the sources disagree by a constant. On
+  the first test region the median difference to HiRISE was -5 m for CTX, -11 m for HRSC+MOLA
+  and -51 m for MOLA. Fusion blends it out at the seams.
+- REMS has gaps. Sols 4616–4753 and 4779–4995 are complete runs; the old default RAD sols
+  453–457 fall into a gap, which is why the quick start asks for 4640–4669.
+- Reading a JP2 window over HTTP takes minutes, so orthoimages under 150 MB are downloaded
+  whole and cropped locally.
+- Not found: TES thermal inertia and TES mineral maps as direct downloads. THEMIS thermal
+  inertia and CRISM replace them at far better resolution.
 
-Priority for the first target: A1 → A2 → A3 → A4 (elevation), then A6 (radiation), then A5 (minerals).
+## Part B — fusion and interpretation (`mars_map/fusion/`, `mars_map/analysis/`)
 
-## B — analysis (regions, rating, fusion)
-
-Works in `mars_map/analysis/` and `mars_map/fusion/`. Branch: `data/analysis`.
-Does not wait for A: uses the synthetic site and a small fake catalog until real data arrives.
-
-Run the whole of part B on fake data (stub → fake catalog → fusion → derived layers → `Site`):
+Part B on fake data only (stub → fake catalog → fusion → `Site`), with the error against the
+stub it was cut from:
 
 ```bash
 .venv\Scripts\python scripts\build_fixture_site.py
 ```
 
-It writes `data/fixture/` (catalog + degraded layers) and `data/gale_fixture/` (the fused site
-with `preview.png`), and prints how far the fused site is from the stub it was cut from.
+| Module | What it does |
+|---|---|
+| [`analysis/fixture.py`](mars_map/analysis/fixture.py) | fake catalog with 4 regions and Gale layers degraded like real sources; lets B run without A |
+| [`fusion/stack.py`](mars_map/fusion/stack.py) | `fuse_region()`: finest source per pixel, coarse sources blended in at the seam (no fake cliffs), `nodata` and `source_res`, `slope`, `roughness`, `terrain_class`, series cut to their common sols |
+| [`fusion/science.py`](mars_map/fusion/science.py) | CRISM indices → detection scores, `science_score`, `mineral_dominant`; `rock_abundance` proxy from image texture; `ridge_index`; `pick_base()`, `mineral_targets()` |
+| [`fusion/derived.py`](mars_map/fusion/derived.py) | `blocked` (hard mask), `cost`, `value`, `walkable_mask()`, `reachable_mask()` |
 
-- [x] **B1. Fake catalog fixture.** `analysis/fixture.py`: 4 regions (Gale, Jezero, Coprates,
-      Arcadia) with invented product footprints, plus Gale layers cut from the stub and degraded
-      like real sources (HiRISE with a gap, CTX 20 m, MOLA 463 m, THEMIS 100 m, CRISM 18 m).
-- [ ] **B2. Region analyzer.** `analysis/regions.py`: for a region compute data completeness
-      (which kinds exist, coverage %, best resolution), safety (walkable %, mean slope) and
-      science (number of mineral / geologic units).
-      *Done when:* it prints a metrics table for the fixture regions.
-- [ ] **B3. Rating.** `analysis/rating.py`: weighted sum of normalized metrics, weights in a
-      config file, result stored in `ratings`.
-      *Done when:* changing a weight changes the ranking, and the top region is printed.
-- [x] **B4. Fusion to one grid.** `fusion/stack.py`: `fuse_region()` takes the processed layers
-      of a region, picks the finest source per pixel (HiRISE > CTX > MOLA), blends coarse sources
-      in at the seam (no fake cliffs), builds `nodata` and `source_res`, derives `slope`,
-      `roughness`, `terrain_class`, returns a valid `Site`.
-      Tested on the fixture only; real data from A4 is the next check.
-- [x] **B5. Derived layers.** `fusion/derived.py`: `blocked` (hard mask: impassable, too steep,
-      no-go), `cost` (times slower than flat firm ground, `inf` where blocked), `value`
-      (science score for now). Weights in `CostWeights` are placeholders until `Alg` has real
-      speeds per terrain type.
-- [ ] **B6. Missing layer types in the stub.** Add `optical`, separate mineral layers and
-      `geologic_unit` to the synthetic generator, so `Alg` and `GUI` can use them before real data.
-      Coordinate with `Alg`: new layers must not break existing code.
+How well fusion keeps the truth, measured on the fixture: elevation is exact where the fine
+source exists and off by 0.19 m on average where only coarse sources do; terrain class agrees
+on 97.6 % of cells; no false cliffs at source seams.
 
-Priority for the first target: B1 → B4 → B5, then B2 → B3, then B6.
+## What is left
 
-## A + B together: a real `Site` for Gale
-
-```bash
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python scripts\ingest_gale.py        # part A: real data -> catalog + processed layers
-.venv\Scripts\python scripts\build_gale_site.py    # part B: fusion -> data/gale_real/ + preview.png
-```
-
-`Site.load("data/gale_real")` then gives the same object as the stub, built from real data.
-
-What the real site has now (first joint run, 2026-11-14):
-
-- Elevation from one HiRISE DTM, 1 m native, 100 % of the region; slope and roughness from it.
-  Relief is 407 m over 2 km, median slope 9°, 4.9 % of cells blocked.
-- Extra layers carried through: `themis_night_ir`, `themis_day_ir` (8-bit DN, not kelvin), `albedo`.
-- Series from Curiosity: REMS weather and RAD dose, cut to the sols all of them share.
-
-Known gaps:
-
-- **No rock abundance, thermal inertia or minerals** in real data yet, so `terrain_class` only
-  tells bedrock from impassable (no sand, no boulders), `science_score` is 0 and `cost` comes
-  from slope and roughness alone.
-- **No targets and no base location.** The start point is picked automatically near the centre.
-- **Series are short.** The default RAD sols 453–457 fall into a gap of the REMS feed, only
-  sols 455–456 are common. Load more sols with `ingest_gale.py --rad-sols`.
-- The region centre (-4.75 N, 137.38 E) is an approximate guess, not a verified boxwork location.
-
-## Meeting points
-
-1. **A2 done** → B switches the analyzer from the fake catalog to the real one.
-2. [x] **A4 done for Gale** → B runs fusion on real elevation instead of synthetic.
-3. [x] **B4 produces a real `Site`** → hand it to `Alg` and `GUI`; their code should work unchanged.
+- [ ] **B2. Region analyzer** (`analysis/regions.py`): data completeness, safety and science
+      metrics per region. *Done when* it prints a metrics table for several regions.
+- [ ] **B3. Rating** (`analysis/rating.py`): weighted sum of the metrics into `ratings`.
+      *Done when* changing a weight changes the ranking.
+- [ ] **B6. New layer types in the stub**: `optical`, `mineral_*`, `reachable`, so `Alg` and
+      `GUI` can develop against them offline.
+- [ ] **Sand detection** from the image (dark, smooth, flat ground); thermal inertia cannot do it.
+- [ ] **Radiation shielding by terrain** (sky view from the DTM) and **shadows by time of day**.
+- [ ] **Geologic map** (USGS units) as a layer.
+- [ ] **Real limits** in `MissionParams` and `CostWeights`, from the `Alg` research questions.
+- [ ] **A second region** (Jezero) to prove the pipeline is not Gale-only. The rover track
+      and series modules are Curiosity-specific.
 
 ## Git
 
-- One branch per person (`data/ingest`, `data/analysis`), merge into `Data` through pull requests.
-- Shared files (`mars_map/site.py`, `catalog/schema.sql`, `requirements.txt`) change only by agreement.
+- Work on `Data`, or branch from it and merge back through a pull request.
+- Shared files (`mars_map/site.py`, `catalog/schema.sql`, `mars_map/grid.py`, `requirements.txt`)
+  change only by agreement.
