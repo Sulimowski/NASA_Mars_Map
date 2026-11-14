@@ -20,6 +20,7 @@ import numpy as np
 from ..catalog.db import add_layer, add_region
 from ..grid import RegionGrid, coverage_frac, write_layer
 from ..site import DATA_DIR
+from .fetch import source_crs
 
 PROCESSED_DIR = DATA_DIR / "processed"
 
@@ -49,7 +50,7 @@ def reproject_to_grid(path: str | Path, grid: RegionGrid, *, resampling: str | N
             resampling = "average" if abs(src.res[0]) < grid.resolution_m * 0.75 else "bilinear"
         reproject(
             source=rasterio.band(src, 1), destination=out,
-            src_nodata=src.nodata, dst_transform=grid.transform(),
+            src_crs=source_crs(src), src_nodata=src.nodata, dst_transform=grid.transform(),
             dst_crs=CRS.from_proj4(grid.proj4), dst_nodata=np.nan,
             resampling=Resampling[resampling])
     # PDS products mark gaps with huge negative floats that not every label declares
