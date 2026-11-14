@@ -224,8 +224,17 @@ what an astronaut would see there.
 - **`rock_abundance` is a proxy, not a measurement.** It is the local contrast of the 1 m
   image, scaled so the roughest 1 % of the region reads 0.5. It also lights up on cliff edges
   and rock layering. It ranks ground from smooth to rugged; it does not count rocks.
-- **No sand class.** Thermal inertia is 300–462 over the whole region (rocky ground), and at
-  100 m per pixel it cannot see the sand ripples that are visible in the image.
+- **Sand is read from the image, not measured.** Thermal inertia alone found no sand (300–462
+  here, and at 100 m per pixel it cannot see strips a few metres wide). `sand_fraction`
+  ([`fusion/sand.py`](mars_map/fusion/sand.py)) reads it from HiRISE and the DTM instead:
+  dark, smooth, flat ground in lows (sand sheets), or strong image contrast on ground the DTM
+  sees as flat and smooth (ripple fields). THEMIS and CRISM olivine only nudge it by ±20 %.
+  Cells with `sand_fraction` ≥ 0.5 are terrain class "sand", and the boot sinkage softens
+  gradually with the fraction. Result: Gale boxwork 0.9 % sand, Jezero 17 %. Check against
+  THEMIS on 100 m blocks, with the map built without THEMIS: at Jezero more mapped sand goes
+  with lower thermal inertia (r = −0.31) and a colder night (r = −0.21), as it should; at Gale
+  there is too little sand to show anything (r ≈ 0). The USGS dune database cannot be used to
+  check it: it maps dune fields larger than about 1 km², and our 2 km sites have none.
 - **Mineral indices are unitless and noisy.** A cell counts as a detection when its index,
   smoothed over one CRISM pixel, is above a fixed threshold; the score runs from 0 at the
   threshold to 1 at a "strong signature" level. The thresholds are the same in every region

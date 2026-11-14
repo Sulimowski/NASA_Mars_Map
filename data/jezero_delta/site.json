@@ -1,6 +1,6 @@
 {
   "name": "jezero_delta",
-  "source": "fused from: crism, ctx_dtm, hirise_dtm, hirise_ortho, hrsc_mola, mola, tes_albedo, themis, themis_ti | rock_abundance = texture proxy; science_score = CRISM minerals",
+  "source": "fused from: crism, ctx_dtm, hirise_dtm, hirise_ortho, hrsc_mola, mola, tes_albedo, themis, themis_ti | rock_abundance = texture proxy; science_score = CRISM minerals; sand_fraction = HiRISE image + DTM cues",
   "resolution_m": 2.0,
   "center_lat": 18.458,
   "center_lon": 77.402,

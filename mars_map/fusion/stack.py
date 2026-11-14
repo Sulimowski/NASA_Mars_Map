@@ -5,7 +5,7 @@ For every layer name the catalog may hold several files from different sources
 has data there. `source_res` records which resolution each pixel came from, and
 `nodata` marks pixels where the best source was missing.
 
-Derived here (never taken from files): slope, roughness, terrain_class.
+Derived here (never taken from files): slope, roughness, terrain_class, sand_fraction.
 """
 
 from __future__ import annotations
@@ -117,10 +117,18 @@ def roughness(elevation: np.ndarray, resolution_m: float) -> np.ndarray:
     return np.sqrt(np.maximum(var, 0)).astype(np.float32)
 
 
-def terrain_class(slope, rock, thermal_inertia, mission: MissionParams) -> np.ndarray:
-    """0 bedrock, 1 sand, 2 boulders, 3 impassable. Later rules override earlier ones."""
+def terrain_class(slope, rock, thermal_inertia, mission: MissionParams,
+                  sand_fraction: np.ndarray | None = None) -> np.ndarray:
+    """0 bedrock, 1 sand, 2 boulders, 3 impassable. Later rules override earlier ones.
+
+    Sand: the HiRISE-based `sand_fraction` map where there is one (see fusion.sand),
+    plus whatever THEMIS alone already calls loose.
+    """
+    from .sand import SAND_CLASS_MIN
     cls = np.zeros(slope.shape, np.uint8)
     cls[thermal_inertia < SAND_THERMAL_INERTIA_MAX] = 1
+    if sand_fraction is not None:
+        cls[sand_fraction >= SAND_CLASS_MIN] = 1
     cls[rock > BOULDER_ROCK_MIN] = 2
     cls[slope > mission.hard_max_slope_deg] = 3
     return cls
@@ -216,6 +224,15 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
                 derived_notes.append("science_score = CRISM minerals")
         extras["ridge_index"] = science.ridge_index(elev, grid.resolution_m)
 
+        rough = roughness(elev, grid.resolution_m)
+        from . import sand
+        sand_frac = sand.sand_fraction(
+            {**extras, "slope": slope, "roughness": rough, "thermal_inertia": ti},
+            grid.resolution_m)
+        if sand_frac is not None:
+            extras["sand_fraction"] = sand_frac
+            derived_notes.append("sand_fraction = HiRISE image + DTM cues")
+
         series = _common_series(db, region)
         used = sorted({f.source for fs in files.values() for f in fs})
     finally:
@@ -231,10 +248,10 @@ def fuse_region(db_path: str | Path, region: str, start: tuple[float, float],
         layers={
             "elevation": elev,
             "slope": slope,
-            "roughness": roughness(elev, grid.resolution_m),
+            "roughness": rough,
             "rock_abundance": np.clip(rock, 0, 1),
             "thermal_inertia": ti,
-            "terrain_class": terrain_class(slope, rock, ti, mission),
+            "terrain_class": terrain_class(slope, rock, ti, mission, sand_frac),
             "science_score": np.clip(sci, 0, 1),
             "nodata": nodata,
             "source_res": np.where(np.isnan(elev_res), np.float32(np.inf), elev_res),

@@ -41,7 +41,7 @@ def resolve_path(folder: str | Path) -> Path:
 # Terrain classes stored in layers["terrain_class"] (uint8).
 TERRAIN_CLASSES = {
     0: "bedrock",      # firm, walkable
-    1: "sand",         # loose; slow, risk of sinking (low thermal inertia)
+    1: "sand",         # loose; slow, risk of sinking (HiRISE sand map or low thermal inertia)
     2: "boulders",     # rock field; slow, trip hazard
     3: "impassable",   # cliffs / too steep; never route through
 }

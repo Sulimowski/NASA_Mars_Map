@@ -42,8 +42,9 @@ a{color:var(--link)}
 #sbpos{color:var(--text)}
 #gl,#labels{position:fixed;left:var(--lw);right:var(--rw);top:var(--bar);bottom:var(--status)}
 #gl{width:calc(100% - var(--lw) - var(--rw));height:calc(100% - var(--bar) - var(--status));display:block;cursor:grab;touch-action:none}
+#gl{background:radial-gradient(120% 75% at 50% 18%,#3a2a21 0%,#261d19 38%,#1a1716 70%,#141516 100%)}
 #gl.dragging{cursor:grabbing}
-#labels{pointer-events:none;overflow:hidden}
+#labels{pointer-events:none;overflow:hidden;box-shadow:inset 0 0 170px rgba(0,0,0,.42)}
 
 /* ---- labels on the map ---- */
 .tag{position:absolute;transform:translate(-50%,-100%);white-space:nowrap;pointer-events:auto;cursor:pointer;
@@ -219,7 +220,8 @@ const world = (xm, ym, lift = 0) => new THREE.Vector3(xm - W / 2, hAt(xm - W / 2
 // ---------- renderer ----------
 const canvas = $('gl');
 const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: true});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+let pixelRatio = Math.min(Math.max(devicePixelRatio, 1.5), 2);     // supersample a little on ordinary screens
+renderer.setPixelRatio(pixelRatio);
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 5, 40000);
@@ -234,11 +236,25 @@ async function texture(uri) {
 }
 const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1); blank.needsUpdate = true;
 
+// Height field as a texture (metres above the lowest point, row 0 = north) for cast
+// shadows and ambient occlusion in the shader.
+const heightTex = (() => {
+  const f = new Float32Array(rows * cols);
+  for (let i = 0; i < f.length; i++) f[i] = H16[i] / 65535 * relief;
+  const t = new THREE.DataTexture(f, cols, rows, THREE.RedFormat, THREE.FloatType);
+  t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t;
+})();
+const SAND = D.sand;
+const sandDir = SAND ? [Math.cos(SAND.wind), Math.sin(SAND.wind)] : [1, 0];   // wind axis, across the ripple crests
+
 const uniforms = {
-  uBase: {value: blank}, uLayer: {value: blank}, uMask: {value: blank},
+  uBase: {value: blank}, uLayer: {value: blank}, uMask: {value: blank}, uSand: {value: blank}, uHeight: {value: heightTex},
   uOpacity: {value: .85}, uExag: {value: 1}, uSun: {value: new THREE.Vector3(0, 1, 0)},
-  uContour: {value: 1}, uHatch: {value: 0}, uShade: {value: .45},
-  uHaze: {value: new THREE.Color(0x15181b)},
+  uContour: {value: 1}, uHatch: {value: 0}, uShade: {value: .45}, uShadows: {value: 1}, uSandOn: {value: SAND ? 1 : 0},
+  uSize: {value: new THREE.Vector2(W, H)}, uGrid: {value: new THREE.Vector2(cols, rows)},
+  uNormal: {value: blank}, uHasNormal: {value: 0}, uTexel: {value: new THREE.Vector2(1000, 1000)},
+  uTime: {value: 0}, uWind: {value: new THREE.Vector2(sandDir[0], sandDir[1])},
+  uHaze: {value: new THREE.Color(0x1d1917)},
 };
 const terrainMat = new THREE.ShaderMaterial({
   uniforms, side: THREE.DoubleSide,
@@ -248,20 +264,103 @@ const terrainMat = new THREE.ShaderMaterial({
       vN = normalize(vec3(normal.x * uExag, normal.y, normal.z * uExag)); vW = p;
       vec4 mv = modelViewMatrix * vec4(p, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }`,
   fragmentShader: `
-    uniform sampler2D uBase, uLayer, uMask; uniform float uOpacity, uContour, uHatch, uShade; uniform vec3 uSun, uHaze;
+    uniform sampler2D uBase, uLayer, uMask, uSand, uHeight, uNormal;
+    uniform float uOpacity, uContour, uHatch, uShade, uShadows, uSandOn, uExag, uTime, uHasNormal;
+    uniform vec3 uSun, uHaze; uniform vec2 uSize, uGrid, uWind, uTexel;
     varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vElev; varying float vDist;
     float line(float e, float step_){ float f = e / step_; float w = fwidth(f) * 1.15; return 1.0 - smoothstep(0.0, w, abs(fract(f - 0.5) - 0.5)); }
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+    // terrain height (scaled by the relief exaggeration) at world x, z
+    float hAt(vec2 xz){ vec2 t = xz / uSize + 0.5; return texture2D(uHeight, t).r * uExag; }
+    bool inside(vec2 xz){ return abs(xz.x) < uSize.x * 0.5 && abs(xz.y) < uSize.y * 0.5; }
+    // Soft cast shadow: march towards the Sun over the height field.
+    float shadow(vec3 p){
+      vec3 s = normalize(uSun); if (s.y < 0.02) return 0.0;
+      float res = 1.0, t = 6.0;
+      for (int i = 0; i < 48; i++) {
+        vec3 q = p + s * t; if (!inside(q.xz) || q.y > ${(relief * 4 + 50).toFixed(1)} * uExag) break;
+        float d = q.y - hAt(q.xz);
+        res = min(res, 9.0 * d / t); if (res < 0.0) return 0.0;
+        t += max(4.0, t * 0.09);
+      }
+      return clamp(res, 0.0, 1.0);
+    }
+    // Ambient occlusion: how far the cell sits below its surroundings, at two scales.
+    float occlusion(vec3 p){
+      float o = 0.0;
+      for (int i = 0; i < 8; i++) { float a = float(i) * 0.7854; vec2 d = vec2(cos(a), sin(a));
+        o += max(hAt(p.xz + d * 10.0) - p.y, 0.0) / 10.0 + 0.6 * max(hAt(p.xz + d * 34.0) - p.y, 0.0) / 34.0; }
+      return clamp(1.0 - o * 0.32, 0.45, 1.0);
+    }
     void main(){
       vec3 base = texture2D(uBase, vUv).rgb; vec4 lay = texture2D(uLayer, vUv);
+      // sharpen the photo a little (unsharp mask over the four neighbours)
+      vec2 px = 1.0 / uTexel;
+      vec3 blur = 0.25 * (texture2D(uBase, vUv + vec2(px.x, 0.0)).rgb + texture2D(uBase, vUv - vec2(px.x, 0.0)).rgb
+                        + texture2D(uBase, vUv + vec2(0.0, px.y)).rgb + texture2D(uBase, vUv - vec2(0.0, px.y)).rgb);
+      base = clamp(base + 0.55 * (base - blur), 0.0, 1.0);
+      // Close to the ground a 2 m photo pixel is a blur: add fine procedural grain and
+      // pebbles there, so the surface keeps texture instead of smearing.
+      float close = 1.0 - smoothstep(120.0, 520.0, vDist);
+      float d1 = noise(vW.xz * 0.9) * 0.5 + noise(vW.xz * 2.7) * 0.3 + noise(vW.xz * 7.5) * 0.2;
+      float d0 = noise(vW.xz * 0.17);
+      base *= 1.0 + close * ((d1 - 0.5) * 0.20 + (d0 - 0.5) * 0.08);
+      // normals at the full site resolution; the mesh only carries the shape
+      vec3 nm = texture2D(uNormal, vUv).rgb * 2.0 - 1.0;
+      vec3 n = uHasNormal > 0.5 ? normalize(vec3(nm.x * uExag, nm.y, nm.z * uExag)) : normalize(vN);
+      if (uHasNormal < 0.5 && !gl_FrontFacing) n = -n;
+      // tiny bumps from the same grain, so close ground catches the light
+      vec2 gb = vec2(noise(vW.xz * 2.7 + vec2(0.35, 0.0)) - noise(vW.xz * 2.7 - vec2(0.35, 0.0)),
+                     noise(vW.xz * 2.7 + vec2(0.0, 0.35)) - noise(vW.xz * 2.7 - vec2(0.0, 0.35)));
+      n = normalize(n + vec3(gb.x, 0.0, gb.y) * 0.55 * close);
+
+      // ---- sand: darker basaltic tone, ripples across the crest direction, gusts of blown sand
+      vec4 sd = texture2D(uSand, vUv); float sf = smoothstep(0.15, 0.6, sd.r) * uSandOn;
+      float rip = 0.0, gust = 0.0;
+      if (sf > 0.002) {
+        float th = 0.5 * atan(sd.b * 2.0 - 1.0, sd.g * 2.0 - 1.0); vec2 dir = vec2(cos(th), sin(th));
+        float u = dot(vW.xz, dir), v = dot(vW.xz, vec2(-dir.y, dir.x));
+        float ph = (u + 1.6 * sin(v * 0.11 + 2.0 * sin(v * 0.031)) + 0.7 * noise(vec2(u, v) * 0.08)) / 4.2;
+        float f = fract(ph), aa = clamp(fwidth(ph) * 1.6, 0.0, 1.0);
+        float prof = f < 0.72 ? f / 0.72 : (1.0 - f) / 0.28;         // gentle windward side, steep lee
+        float slope_ = f < 0.72 ? 0.55 : -1.4;
+        float sunAcross = dot(normalize(uSun.xz + 1e-4), dir);
+        rip = (slope_ * sunAcross * 0.24 + (prof - 0.5) * 0.08) * (1.0 - aa) * (1.0 - smoothstep(450.0, 1400.0, vDist));
+        // gusts: soft bright streaks running downwind over the sand
+        vec2 w = uWind; float gu = dot(vW.xz, w), gv = dot(vW.xz, vec2(-w.y, w.x));
+        gust = smoothstep(0.55, 0.95, noise(vec2(gu * 0.02 - uTime * 0.25, gv * 0.06))) * 0.12;
+        // sand reads as its own material: smoother, a cooler dark-umber tone than the rock,
+        // with a soft sheen where it faces the Sun
+        vec3 sandCol = mix(base, vec3(dot(base, vec3(0.33))), 0.25) * vec3(0.86, 0.76, 0.68) + vec3(0.05, 0.035, 0.025);
+        sandCol *= 0.97 + 0.06 * hash(floor(vW.xz * 2.0));             // grain
+        sandCol += vec3(0.07, 0.055, 0.04) * pow(max(dot(normalize(vN), normalize(uSun)), 0.0), 3.0);
+        base = mix(base, sandCol, 0.72 * sf);
+      }
+
       float k = uOpacity * lay.a; vec3 c = mix(base, lay.rgb, k);
-      float lit = 0.42 + 0.86 * max(dot(normalize(vN), uSun), 0.0);
-      c *= mix(1.0, lit, mix(uShade, 0.85, k));
+
+      // ---- light: warm Sun with soft cast shadows, cool sky fill, occlusion in hollows
+      float sh = uShadows > 0.5 ? shadow(vW + n * 1.5) : 1.0;
+      float ao = uShadows > 0.5 ? occlusion(vW) : 1.0;
+      float ndl = max(dot(n, normalize(uSun)), 0.0);
+      vec3 sunC = vec3(1.08, 0.98, 0.86), skyC = vec3(0.50, 0.47, 0.50);
+      vec3 lit = (skyC * (0.55 + 0.45 * n.y) * ao + sunC * ndl * mix(1.0, sh, 0.85) * 0.95);
+      lit = lit * (1.0 + rip * sf) + gust * sf;
+      c *= mix(vec3(1.0) * mix(1.0, ao, 0.6) * mix(1.0, 0.55 + 0.45 * sh, 0.7), lit, mix(uShade, 0.85, k));
+
       float m = texture2D(uMask, vUv).r * uHatch;
       float stripe = step(0.5, fract((vW.x + vW.z) / 13.0));
       c = mix(c, vec3(0.70, 0.13, 0.05), m * (0.30 + 0.45 * stripe));
       float near = 1.0 - smoothstep(2600.0, 5200.0, vDist);
       float ct = max(0.42 * line(vElev, 10.0), 0.72 * line(vElev, 50.0)) * uContour * near;
       c = mix(c, vec3(0.13, 0.08, 0.05), ct);
+      // grade: a little more colour, a soft shoulder so bright rock does not clip
+      float lum = dot(c, vec3(0.30, 0.59, 0.11));
+      c = mix(vec3(lum), c, 1.14);
+      c = c * (1.0 + c * 0.22) / (1.0 + c * 0.30) * 1.08;
+      c = pow(max(c, 0.0), vec3(0.97));
       c = mix(c, uHaze, 0.42 * smoothstep(2200.0, 9000.0, vDist));
       gl_FragColor = vec4(c, 1.0);
     }`,
@@ -340,7 +439,7 @@ buildPins();
 const ring = new THREE.Mesh(new THREE.RingGeometry(13, 16.5, 40), new THREE.MeshBasicMaterial({color: PAPER, side: THREE.DoubleSide, transparent: true, opacity: .9, depthTest: false}));
 ring.rotation.x = -Math.PI / 2; ring.visible = false; ring.renderOrder = 5; scene.add(ring);
 
-let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0, devilPoints = null;
+let trackMesh = null, routeMesh = null, routeCurve = null, t0 = 0, devilPoints = null, sandPoints = null;
 // EVA plans: the planner's three strategies, or the single route of the older format.
 let PLANS = D.plans ? D.plans.items : (D.route ? [Object.assign({id: 'route', title: 'EVA route'}, D.route)] : []);
 let PLAN = PLANS.find(p => p.id === 'science') || PLANS[0] || null;
@@ -363,6 +462,10 @@ function layout() {                                // everything that sits on th
 
 // ---------- camera: orbit / pan / zoom with easing ----------
 const goal = {az: -.62, el: .56, r: Math.max(W, H) * 1.52, x: 0, z: H * .04};
+{ // a view can be linked: view3d.html#cam=az,el,r,x,z (radians, metres from the centre)
+  const m = location.hash.match(/cam=([-\d.,]+)/);
+  if (m) { const v = m[1].split(',').map(Number); ['az', 'el', 'r', 'x', 'z'].forEach((k, i) => { if (isFinite(v[i])) goal[k] = v[i]; }); }
+}
 const cam = {...goal};
 let ease = .16, drag = null, moved = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
@@ -385,6 +488,9 @@ function placeCamera() {
   for (const k of ['az', 'el', 'r', 'x', 'z']) cam[k] += (goal[k] - cam[k]) * ease;
   const ty = hAt(cam.x, cam.z) * exag, ce = Math.cos(cam.el);
   camera.position.set(cam.x + cam.r * ce * Math.sin(cam.az), ty + cam.r * Math.sin(cam.el), cam.z + cam.r * ce * Math.cos(cam.az));
+  // never let the camera sink into a hillside: lift it over the ground it stands above
+  const cp = camera.position;
+  if (Math.abs(cp.x) < W / 2 && Math.abs(cp.z) < H / 2) cp.y = Math.max(cp.y, hAt(cp.x, cp.z) * exag + 18);
   camera.lookAt(cam.x, ty, cam.z);
   $('needle').setAttribute('transform', `rotate(${cam.az * 180 / Math.PI})`);
 }
@@ -426,6 +532,7 @@ function readout() {
   if (probes.cost) rowsOut.push(['Walking cost', probes.cost.a[i] === 255 ? 'blocked' : '&times;' + fmt(val('cost'))]);
   if (probes.reachable) rowsOut.push(['From base', val('reachable') ? 'reachable' : 'cut off']);
   if (probes.thermal_inertia) rowsOut.push(['Thermal inertia', fmt(val('thermal_inertia'), 0)]);
+  if (probes.sand_fraction) rowsOut.push(['Loose sand', fmt(val('sand_fraction') * 100, 0) + ' %']);
   if (probes.mineral_dominant) rowsOut.push(['Mineral', (D.mineralNames[val('mineral_dominant')] || 'none').replace(/\s*\(.*\)/, '')]);
   if (probes.science_score) rowsOut.push(['Science score', fmt(val('science_score'), 2)]);
   t.innerHTML = rowsOut.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
@@ -479,8 +586,13 @@ const toggles = {contours: ['Contours 10 m', true], hatch: ['Blocked ground', fa
 if (D.track.length) toggles.track = ['Rover track', true];
 if (PLANS.length) toggles.route = ['EVA route', true];
 if (D.devils) toggles.devils = ['Dust devils', true];
+if (SAND) toggles.sand = ['Sand and blowing sand', true];
+toggles.shadows = ['Shadows', true];
 function applyToggles() {
   uniforms.uContour.value = toggles.contours[1] ? 1 : 0; uniforms.uHatch.value = toggles.hatch[1] ? 1 : 0;
+  uniforms.uShadows.value = toggles.shadows[1] ? 1 : 0;
+  uniforms.uSandOn.value = toggles.sand && toggles.sand[1] ? 1 : 0;
+  if (sandPoints) sandPoints.visible = !!(toggles.sand && toggles.sand[1]);
   $('labels').style.display = toggles.labels[1] ? '' : 'none';
   if (trackMesh) trackMesh.visible = !!(toggles.track && toggles.track[1]);
   if (routeMesh) routeMesh.visible = !!(toggles.route && toggles.route[1]);
@@ -639,7 +751,7 @@ showPlan();
 // season and hour, where they appear and where they drift is random, and they are drawn about
 // three times wider than real so they can be seen at this scale.
 const DV = D.devils;
-const DV_NP = 3200, DV_SHADOW = 36, DV_MAX = 14, SOL_H = 1.0275;     // particles per vortex, vortices at once, Earth h per Mars h
+const DV_NP = 4400, DV_SHADOW = 36, DV_MAX = 14, SOL_H = 1.0275;     // particles per vortex, vortices at once, Earth h per Mars h
 const dv = {season: 0, hour: 11.5, play: true, last: 0, shown: ''};
 const devils = [];
 let devilGeo = null;
@@ -674,12 +786,22 @@ if (DV) {
   // Soft round particles with their own colour, size (metres) and transparency.
   devilPoints = new THREE.Points(devilGeo, new THREE.ShaderMaterial({
     uniforms: {uScale: {value: 600}},
-    vertexShader: `attribute float alpha, psize; attribute vec3 tint; varying float vA; varying vec3 vC; uniform float uScale;
-      void main() { vA = alpha; vC = tint; vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(psize * uScale / -mv.z, 3.0, 30.0); gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: `varying float vA; varying vec3 vC;
-      void main() { vec2 p = gl_PointCoord - 0.5; float d2 = dot(p, p); if (d2 > 0.25) discard;
-        gl_FragColor = vec4(vC, min(1.0, vA * exp(-d2 * 10.0))); }`,
+    vertexShader: `attribute float alpha, psize; attribute vec3 tint; varying float vA, vSeed; varying vec3 vC; uniform float uScale;
+      void main() { vA = alpha; vC = tint; vSeed = fract(sin(float(gl_VertexID) * 12.9898) * 43758.5453);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = clamp(psize * uScale / -mv.z, 2.5, 46.0); gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `varying float vA, vSeed; varying vec3 vC;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+      void main() { vec2 p = gl_PointCoord - 0.5;
+        // a puff of dust: soft, with a ragged edge that differs from particle to particle
+        float n = noise(p * 5.0 + vSeed * 91.0) * 0.6 + noise(p * 11.0 + vSeed * 37.0) * 0.4;
+        float r = length(p) * (1.1 + 0.55 * n); if (r > 0.5) discard;
+        float a = pow(1.0 - r * 2.0, 1.35);
+        // lit from above, darker underneath: gives each puff some volume
+        vec3 c = vC * (0.86 + 0.26 * (0.5 - gl_PointCoord.y) + 0.10 * (n - 0.5));
+        gl_FragColor = vec4(c, min(1.0, vA * a * 1.25)); }`,
     transparent: true, depthWrite: false}));
   devilPoints.frustumCulled = false; devilPoints.renderOrder = 4; scene.add(devilPoints);
   dv.scale = 1.1 / peak;                              // spawns per second of animation at the peak hour of the year
@@ -716,6 +838,10 @@ function drawDevilPanel() {
 }
 drawDevilPanel();
 window.__devils = {state: dv, list: devils, spawn: () => spawnDevil()};    // for debugging, like window.__viewer
+{ // view3d.html#devils=3 starts with that many vortices already turning (for screenshots and demos)
+  const m = location.hash.match(/devils=(\d+)/);
+  if (m && DV) for (let i = 0; i < Math.min(+m[1], DV_MAX); i++) { spawnDevil(); devils[devils.length - 1].age = 2 + Math.random() * 2; }
+}
 
 function spawnDevil() {
   const m = 120, s = 22 + Math.random() * 18, w = dv.wind + (Math.random() - .5) * .9;
@@ -738,7 +864,7 @@ function updateDevils(now) {
   devilPoints.material.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(camera.fov * Math.PI / 360));
   const A = devilGeo.attributes, pos = A.position.array, alp = A.alpha.array, siz = A.psize.array, col = A.tint.array;
   const {A0, F0, J, K} = dv.pattern, sun = uniforms.uSun.value;
-  const sunLow = Math.max(sun.y, .15);
+  const sunLow = Math.max(sun.y, .15), sunH = Math.hypot(sun.x, sun.z) || 1, sunX = sun.x / sunH, sunZ = sun.z / sunH;
   let n = 0;
   const put = (x, y, z, a, s, r, g, b) => {
     pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z; alp[n] = a; siz[n] = s;
@@ -771,15 +897,88 @@ function updateDevils(now) {
       const oz = Math.cos(f * 3.6 + t * 1.1) * wob - uz * .22 * h * sp / 30;
       // dense rust-brown at the foot, pale and thin at the top
       const c = Math.min(1, f * 1.4);
-      const alpha = env * (kind === 2 ? .6 * (1 - J[i] * .5) : kind === 0 ? 1 : .75)
+      // arms: fine, opaque streaks; core: big faint puffs that fill the column like haze
+      const alpha = env * (kind === 2 ? .5 * (1 - J[i] * .5) : kind === 0 ? 1 : .34)
         * Math.pow(1 - f, .9) * Math.min(1, (f + .02) / .06);
+      // the side of the column that faces the Sun is brighter, the far side sits in its own shade
+      const lit = .78 + .34 * Math.max(0, Math.cos(a) * sunX + Math.sin(a) * sunZ) - .10 * Math.max(0, -(Math.cos(a) * sunX + Math.sin(a) * sunZ));
       put(base.x + Math.cos(a) * r + ox, base.y + h + 1.5, base.z + Math.sin(a) * r + oz, alpha,
-        (kind === 2 ? 7 : kind === 0 ? 3.8 : 5.2) * (.8 + 1.0 * f),
-        .72 + .27 * c, .5 + .4 * c, .36 + .46 * c);
+        (kind === 2 ? 10 : kind === 0 ? 3.8 : 11) * (.8 + 1.0 * f),
+        (.72 + .27 * c) * lit, (.5 + .4 * c) * lit, (.36 + .46 * c) * lit);
     }
   }
   devilGeo.setDrawRange(0, n);
   for (const k of ['position', 'alpha', 'psize', 'tint']) A[k].needsUpdate = true;
+}
+
+// ---------- blowing sand: veils of sand drifting low over the mapped sand ----------
+// When the wind gusts, Martian sand moves as a thin sheet of grains a metre or two
+// above the ground. Here it is drawn as translucent layers that follow the relief,
+// show only over cells the sand map calls sand and stream along the wind axis read
+// from the ripples. An illustration: the wind is not modelled, its strength follows a
+// slow gust cycle, and the sheets are drawn higher than real so they can be seen.
+const sp = {last: 0, t: 0};
+let veils = [];
+if (SAND) {
+  sandPoints = new THREE.Group(); scene.add(sandPoints);
+  const step = Math.max(1, Math.round(Math.max(rows, cols) / 260)), vr = Math.ceil(rows / step), vc = Math.ceil(cols / step);
+  const pos = new Float32Array(vr * vc * 3), uv = new Float32Array(vr * vc * 2);
+  for (let r = 0, i = 0; r < vr; r++) for (let c = 0; c < vc; c++, i++) {
+    const rr = Math.min(r * step, rows - 1), cc = Math.min(c * step, cols - 1);
+    pos[i * 3] = (cc / (cols - 1) - .5) * W; pos[i * 3 + 1] = H16[rr * cols + cc] / 65535 * relief; pos[i * 3 + 2] = (rr / (rows - 1) - .5) * H;
+    uv[i * 2] = cc / (cols - 1); uv[i * 2 + 1] = 1 - rr / (rows - 1);
+  }
+  const idx = [];
+  for (let r = 0; r < vr - 1; r++) for (let c = 0; c < vc - 1; c++) {
+    const a = r * vc + c, b = a + vc; idx.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  // three layers: a dense sheet hugging the ground, a looser one above, a faint haze on top
+  for (const [lift, speed, scale, strength] of [[1.2, .55, 1.0, 1.0], [3.5, .38, .7, .6], [7.5, .22, .45, .32]]) {
+    const m = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+      uniforms: {uSand: uniforms.uSand, uTime: uniforms.uTime, uWind: uniforms.uWind, uSun: uniforms.uSun,
+                 uExag: uniforms.uExag, uGust: {value: .5}, uLift: {value: lift}, uSpeed: {value: speed},
+                 uScale: {value: scale}, uStrength: {value: strength}},
+      vertexShader: `uniform float uExag, uLift; varying vec2 vUv; varying vec3 vW; varying float vDist;
+        void main(){ vUv = uv; vec3 p = position; p.y = p.y * uExag + uLift; vW = p;
+          vec4 mv = modelViewMatrix * vec4(p, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform sampler2D uSand; uniform float uTime, uGust, uSpeed, uScale, uStrength; uniform vec2 uWind; uniform vec3 uSun;
+        varying vec2 vUv; varying vec3 vW; varying float vDist;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+        float fbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * noise(p); p = p * 2.03 + 17.1; a *= 0.5; } return v; }
+        void main(){
+          // where the sand is: a soft-edged mask, so the veils fade out at the edge of a sand patch
+          vec2 o = vec2(0.004, 0.0);
+          float s = 0.4 * texture2D(uSand, vUv).r + 0.15 * (texture2D(uSand, vUv + o).r + texture2D(uSand, vUv - o).r
+                  + texture2D(uSand, vUv + o.yx).r + texture2D(uSand, vUv - o.yx).r);
+          s = smoothstep(0.12, 0.55, s);
+          if (s < 0.01) discard;
+          // long streamers along the wind: noise stretched downwind and warped, scrolling with time
+          vec2 w = uWind; float a = dot(vW.xz, w), b = dot(vW.xz, vec2(-w.y, w.x));
+          vec2 q = vec2(a * 0.010 * uScale - uTime * uSpeed, b * 0.045 * uScale);
+          float warp = fbm(q * 0.6 + vec2(uTime * 0.04, 0.0));
+          float f = fbm(q + vec2(warp * 1.4, warp * 0.6));
+          float sheet = smoothstep(0.36, 0.72, f);
+          float fine = 0.75 + 0.25 * noise(vec2(a * 0.35 - uTime * uSpeed * 30.0, b * 0.35));   // grainy texture inside
+          float alpha = s * sheet * fine * uStrength * (0.30 + 0.75 * uGust);
+          alpha *= 0.65 + 0.35 * smoothstep(300.0, 1800.0, vDist);   // a bit stronger from afar, so it reads in the overview
+          vec3 col = vec3(0.95, 0.82, 0.64) * (0.80 + 0.35 * clamp(normalize(uSun).y, 0.0, 1.0));
+          gl_FragColor = vec4(col, min(alpha, 0.85));
+        }`,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide}));
+    m.frustumCulled = false; m.renderOrder = 3; sandPoints.add(m); veils.push(m);
+  }
+}
+const gustAt = t => .25 + .75 * Math.max(0, .5 + .5 * Math.sin(t * .23) * Math.sin(t * .37 + 1.3));
+function updateSand(now) {
+  const dt = sp.last ? Math.min((now - sp.last) / 1000, .1) : 0; sp.last = now; sp.t += dt;
+  uniforms.uTime.value = sp.t;
+  const g = gustAt(sp.t);
+  for (const m of veils) m.material.uniforms.uGust.value = g;
 }
 
 { const S = D.series, sol = S.sol || [];
@@ -802,7 +1001,10 @@ function updateDevils(now) {
 
 // ---------- go ----------
 uniforms.uBase.value = await texture(D.base);
+uniforms.uTexel.value.set(uniforms.uBase.value.image.width, uniforms.uBase.value.image.height);
 uniforms.uMask.value = await texture(D.mask);
+if (D.normals) { uniforms.uNormal.value = await texture(D.normals); uniforms.uHasNormal.value = 1; }
+if (SAND) { const t = await texture(SAND.tex); t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; uniforms.uSand.value = t; }
 sun(); $('op').oninput(); $('exv').textContent = '1.00'; layout(); setLayer('photo');
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight; if (!w || !h) return;
@@ -813,6 +1015,13 @@ const v = new THREE.Vector3(); t0 = performance.now();
 function frame(now) {
   placeCamera();
   updateDevils(now);
+  updateSand(now);
+  // keep it smooth: if frames take too long, render fewer pixels (never below the screen's own)
+  if (frame.last) { frame.avg = (frame.avg ?? 16) * .95 + (now - frame.last) * .05; frame.n = (frame.n ?? 0) + 1; }
+  frame.last = now;
+  if (frame.n > 90 && frame.avg > 42 && pixelRatio > 1 && !document.hidden) {
+    pixelRatio = Math.max(1, pixelRatio - .25); renderer.setPixelRatio(pixelRatio); resize(); frame.n = 0; frame.avg = 16;
+  }
   if (mouse.fresh && !drag) { mouse.fresh = false; readout(); }
   if (routeCurve && walker.visible) {
     const u = (((now - t0) / 42000) % 1 + 1) % 1;          // the first frame can be stamped before t0

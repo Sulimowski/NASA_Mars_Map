@@ -102,9 +102,17 @@ def rasterize_nogo(
 
 
 def bekker_sinkage_cm(thermal_inertia: np.ndarray, sand: np.ndarray,
-                      suit: SuitParams = SuitParams()) -> np.ndarray:
-    """Static boot sinkage in centimetres from the Bekker-Wong pressure-sinkage law."""
+                      suit: SuitParams = SuitParams(),
+                      sand_fraction: np.ndarray | None = None) -> np.ndarray:
+    """Static boot sinkage in centimetres from the Bekker-Wong pressure-sinkage law.
+
+    `sand_fraction` (0..1, from the HiRISE sand map) softens the ground gradually:
+    a cell that is half sand is at most half as firm as THEMIS says.
+    """
     firmness = np.clip((thermal_inertia - TI_LOOSE) / (TI_FIRM - TI_LOOSE), 0.0, 1.0)
+    if sand_fraction is not None:
+        f = np.clip(np.nan_to_num(sand_fraction), 0.0, 1.0)
+        firmness = np.minimum(firmness, 1.0 - 0.9 * f)
     firmness = np.where(sand, np.minimum(firmness, 0.1), firmness)    # mapped sand is never firm
     k_phi = np.exp(np.log(K_PHI_LOOSE) + firmness * (np.log(K_PHI_FIRM) - np.log(K_PHI_LOOSE)))
     n = N_LOOSE + firmness * (N_FIRM - N_LOOSE)
@@ -144,7 +152,7 @@ def build_astronaut_terrain(
     nodata = L["nodata"].astype(bool)
 
     # 1. Sinkage: how deep the boot goes, then as a 0..1 index.
-    sinkage_cm = bekker_sinkage_cm(ti, tclass == 1, suit)
+    sinkage_cm = bekker_sinkage_cm(ti, tclass == 1, suit, L.get("sand_fraction"))
     sinkage = np.clip(sinkage_cm / SINKAGE_REF_CM, 0.0, 1.0)
 
     # 2. Rocks and micro-relief.

@@ -1,6 +1,6 @@
 {
   "name": "gale_boxwork",
-  "source": "fused from: crism, ctx_dtm, hirise_color, hirise_dtm, hirise_ortho, hrsc_mola, mola, tes_albedo, themis, themis_ti | rock_abundance = texture proxy; science_score = CRISM minerals",
+  "source": "fused from: crism, ctx_dtm, hirise_color, hirise_dtm, hirise_ortho, hrsc_mola, mola, tes_albedo, themis, themis_ti | rock_abundance = texture proxy; science_score = CRISM minerals; sand_fraction = HiRISE image + DTM cues",
   "resolution_m": 2.0,
   "center_lat": -4.812,
   "center_lon": 137.383,
@@ -350,7 +350,7 @@
       "y_m": 1441.0,
       "priority": 2,
       "dwell_min": 25,
-      "note": "CRISM detection, mean score 0.97 over 60 m"
+      "note": "CRISM detection, mean score 0.56 over 60 m"
     },
     {
       "name": "Hydrated minerals (bound water) exposure 2",
@@ -358,23 +358,7 @@
       "y_m": 101.0,
       "priority": 2,
       "dwell_min": 25,
-      "note": "CRISM detection, mean score 0.68 over 60 m"
-    },
-    {
-      "name": "Hydrated minerals (bound water) exposure 3",
-      "x_m": 1583.0,
-      "y_m": 531.0,
-      "priority": 2,
-      "dwell_min": 25,
-      "note": "CRISM detection, mean score 0.25 over 60 m"
-    },
-    {
-      "name": "Hydrated silica / Al-OH exposure 4",
-      "x_m": 1341.0,
-      "y_m": 1181.0,
-      "priority": 2,
-      "dwell_min": 25,
-      "note": "CRISM detection, mean score 0.18 over 60 m"
+      "note": "CRISM detection, mean score 0.16 over 60 m"
     }
   ],
   "no_go": [],

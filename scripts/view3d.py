@@ -50,12 +50,12 @@ CLASS_COLORS = ["#c9a57b", "#f0cf63", "#8a4f38", "#1b1512"]
 MINERAL_COLORS = ["#00000000", "#f2c230", "#f0721b", "#2bb3a0", "#3d8bfd", "#9b5de5", "#d6455d", "#7aa63c", "#59607a"]
 
 
-def encode(rgba: np.ndarray, lossless: bool = False) -> str:
+def encode(rgba: np.ndarray, lossless: bool = False, quality: int = 88) -> str:
     """HxWx4 uint8 -> data URI (WebP: small and keeps transparency; PNG if WebP is missing)."""
     img = Image.fromarray(rgba, "RGBA")
     buf = io.BytesIO()
     if features.check("webp"):
-        img.save(buf, "WEBP", lossless=lossless, quality=88, method=4)
+        img.save(buf, "WEBP", lossless=lossless, quality=quality, method=4)
         mime = "image/webp"
     else:
         img.save(buf, "PNG", optimize=True)
@@ -140,6 +140,13 @@ def build_layers(site: Site) -> tuple[str, str, list[dict]]:
          note="From image texture on real sites: ranks smooth to rugged, does not count rocks.")
     cont("thermal_inertia", "Thermal inertia", "Surface", "inferno", "J m⁻² K⁻¹ s⁻½", fmt=".0f",
          note="Low = loose sand and dust, high = rock. THEMIS, 100 m per pixel.")
+    if "sand_fraction" in L:
+        s = np.nan_to_num(L["sand_fraction"])
+        cont("sand_fraction", "Loose sand", "Surface", "YlOrBr", "0..1", vmin=0, vmax=1, fmt=".1f",
+             alpha=np.clip(s * 2.5, 0, 0.9),
+             note=f"Read from the HiRISE photo and terrain: dark smooth sand sheets in lows and ripple "
+                  f"fields. Half or more sand on {(s >= 0.5).mean():.0%} of the site; the walk there is "
+                  "slower and boots sink. An interpretation, not a measurement.")
 
     # --- terrain -----------------------------------------------------------------
     cont("elevation", "Elevation", "Terrain", RELIEF, "m", lo=0, hi=100, fmt=".0f")
@@ -203,7 +210,7 @@ def build_layers(site: Site) -> tuple[str, str, list[dict]]:
     if "source_res" in L:
         cont("source_res", "Elevation source", "Data", "viridis_r", "m per pixel", fmt=".0f",
              note="Resolution of the terrain model each cell came from. Higher = coarser data.")
-    return encode(base), caption, out
+    return encode(base, quality=96), caption, out
 
 
 def b64(a: np.ndarray) -> str:
@@ -270,6 +277,43 @@ def dust_devils(site: Site, folder: Path) -> dict | None:
             "source": "hazards model, calibrated on Curiosity pressure at Gale"}
 
 
+def normal_map(site: Site) -> str:
+    """Surface normals at the full site resolution (the mesh is coarser), as a texture.
+
+    World axes of the viewer: x east, y up, z south. RGB = normal * 0.5 + 0.5.
+    """
+    dz, dx = np.gradient(site.layers["elevation"].astype(np.float64), site.resolution_m)
+    n = np.dstack([-dx, np.ones_like(dx), -dz])
+    n /= np.linalg.norm(n, axis=2, keepdims=True)
+    rgba = np.dstack([n * 0.5 + 0.5, np.ones_like(dx)])
+    return encode(np.round(rgba * 255).astype(np.uint8), quality=94)
+
+
+def sand_data(site: Site) -> dict | None:
+    """Sand for the 3D view: amount and ripple direction per cell, plus the wind axis.
+
+    Texture channels: R = sand_fraction, G/B = cos/sin of twice the direction across
+    the ripple crests (doubled so that opposite directions agree), read from the photo
+    with a structure tensor over ~30 m. The wind axis is the sand-weighted mean of it.
+    """
+    L = site.layers
+    if "sand_fraction" not in L or "optical" not in L:
+        return None
+    from mars_map.fusion.stack import box_mean
+    s = np.clip(np.nan_to_num(L["sand_fraction"]), 0, 1)
+    o = np.nan_to_num(L["optical"], nan=float(np.nanmedian(L["optical"])))
+    gy, gx = np.gradient(box_mean(o, 1))
+    r = max(1, int(round(15.0 / site.resolution_m)))
+    jxx, jyy, jxy = box_mean(gx * gx, r), box_mean(gy * gy, r), box_mean(gx * gy, r)
+    c2, s2 = jxx - jyy, 2 * jxy
+    n = np.hypot(c2, s2) + 1e-12
+    rgba = np.dstack([s, c2 / n * .5 + .5, s2 / n * .5 + .5, np.ones_like(s)])
+    w = s ** 2
+    axis = 0.5 * float(np.arctan2((s2 / n * w).sum(), (c2 / n * w).sum())) if w.sum() > 0 else 0.0
+    return {"tex": encode((rgba * 255).astype(np.uint8), lossless=True), "wind": axis,
+            "share": float((s >= 0.5).mean())}
+
+
 def three_source() -> str | None:
     """The 3D library, cached in data/cache so the page works offline. None = load from the CDN."""
     path = DATA_DIR / "cache" / f"three-{THREE_VERSION}.module.min.js"
@@ -309,6 +353,8 @@ def build(folder: Path) -> Path:
         probes["mineral_dominant"] = probe(sub("mineral_dominant"), 1)
     if "reachable" in L:
         probes["reachable"] = probe(sub("reachable"), 1)
+    if "sand_fraction" in L:
+        probes["sand_fraction"] = probe(sub("sand_fraction"), 1 / 254)
     blocked = L["blocked"] if "blocked" in L else (L["terrain_class"] == 3)
     mask = np.zeros(blocked.shape + (4,), np.uint8)
     mask[blocked] = (255, 255, 255, 255)
@@ -345,12 +391,13 @@ def build(folder: Path) -> Path:
         "lat": site.center_lat, "lon": site.center_lon, "radius": MARS_RADIUS_M,
         "mesh": {"rows": int(elev.shape[0]), "cols": int(elev.shape[1]), "emin": emin, "emax": emax,
                  "heights": b64(heights)},
-        "base": base, "baseCaption": caption, "mask": encode(mask, lossless=True), "layers": layers,
+        "base": base, "normals": normal_map(site), "baseCaption": caption, "mask": encode(mask, lossless=True), "layers": layers,
         "probes": probes, "terrainNames": list(TERRAIN_CLASSES.values()),
         "mineralNames": mineral_names,
         "start": list(site.start), "targets": targets, "noGo": site.no_go,
         "track": rover_track(site), "route": route, "plans": plans, "series": site.series,
         "devils": dust_devils(site, folder),
+        "sand": sand_data(site),
         "mission": {"maxSlope": m.max_slope_deg, "hardSlope": m.hard_max_slope_deg, "evaHours": m.eva_max_hours,
                     "maxDose": m.max_dose_msv, "maxKm": m.max_distance_km, "speed": m.walk_speed_flat_kmh},
         "stats": {"blocked": float(blocked.mean()),
