@@ -1,7 +1,7 @@
 """Generate the synthetic Gale-like test site.
 
     python scripts/make_stub_site.py                 # data/gale_stub, 2 km at 2 m/px
-    python scripts/make_stub_site.py --res 1         # 1 m/px (4x bigger)
+    python scripts/make_stub_site.py --res 1         # 1 m/px (4x bigger) !
 """
 
 import argparse

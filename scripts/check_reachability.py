@@ -1,7 +1,7 @@
 """Sanity check: can every target be reached on foot from the start?
 
 Walkable = slope <= mission.max_slope_deg, class != impassable, outside no-go.
-This is NOT a route planner, just a flood fill to prove the site is solvable.
+This is NOT a route planner, just a flood fill to prove the site is solvable !.
 """
 
 import sys
