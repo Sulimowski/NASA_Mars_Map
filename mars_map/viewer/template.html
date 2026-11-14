@@ -118,6 +118,10 @@ svg.hours{display:block;width:100%;height:64px;margin-top:8px;overflow:visible}
 .warn{margin:6px 0 0;color:var(--warn)}
 #edit{padding:0 12px}
 #edit .row{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+.trip{display:flex;align-items:center;gap:9px;margin:0 0 8px}
+.trip button{font:inherit;color:#fff;background:var(--sel);border:1px solid var(--sel);padding:4px 11px;cursor:pointer;white-space:nowrap}
+.trip button:hover{filter:brightness(1.12)}
+.trip span{color:var(--dim)}
 #edit button{font:inherit;color:var(--text);background:#30353c;border:1px solid #4a5058;padding:4px 9px;cursor:pointer}
 #edit button:hover{background:var(--hover)}
 #edit button.on{background:var(--sel);border-color:var(--sel);color:#fff}
@@ -619,11 +623,11 @@ $('ex').oninput = () => { exag = +$('ex').value; uniforms.uExag.value = exag; $(
 
 let selected = -1;
 function listStops() {
-  $('stops').innerHTML = stops.map((s, i) => `<div class="stop ${s.kind}${i === selected ? ' on' : ''}" data-i="${i}"><b>${i === 0 ? 'B' : i}</b><span>${s.name.replace(/\s*\(.*?\)/, '')}</span><small>${i === 0 ? '' : 'P' + s.priority}${i ? ` <a class="e" data-e="${i}" title="Rename this point">&#9998;</a>` : ''}${custom && i ? ` <a class="x" data-x="${i}" title="Remove this point">&#10005;</a>` : ''}</small></div>`).join('');
+  $('stops').innerHTML = stops.map((s, i) => `<div class="stop ${s.kind}${i === selected ? ' on' : ''}" data-i="${i}"><b>${i === 0 ? 'B' : i}</b><span>${s.name.replace(/\s*\(.*?\)/, '')}</span><small>${i === 0 ? '' : 'P' + s.priority}${i ? ` <a class="e" data-e="${i}" title="Rename this point">&#9998;</a>` : ''}${i ? ` <a class="x" data-x="${i}" title="Remove this point">&#10005;</a>` : ''}</small></div>`).join('');
   document.querySelectorAll('.stop .e').forEach(e => e.onclick = ev => { ev.stopPropagation(); renameStop(+e.dataset.e); });
   document.querySelectorAll('.stop span').forEach(e => e.ondblclick = ev => { const i = +e.parentNode.dataset.i; if (i) { ev.stopPropagation(); renameStop(i); } });
   document.querySelectorAll('.stop').forEach(e => e.onclick = () => select(+e.dataset.i, true));
-  document.querySelectorAll('.stop .x').forEach(e => e.onclick = ev => { ev.stopPropagation(); stops.splice(+e.dataset.x, 1); renumber(); stopsChanged(); });
+  document.querySelectorAll('.stop .x').forEach(e => e.onclick = ev => { ev.stopPropagation(); custom = true; stops.splice(+e.dataset.x, 1); renumber(); editMsg = ''; stopsChanged(); });
 }
 function select(i, fly) {
   selected = i; const s = stops[i];
@@ -651,12 +655,40 @@ function showPlan() {
      <td>${fmt(p.summary.total_time_hours, 1)} h</td><td>${fmt(p.summary.o2_remaining_pct, 0)} %</td><td>${fmt(p.summary.total_dose_msv, 3)}</td></tr>`).join('')}</table>` : '';
   const when = P ? `<p class="note">Sol ${P.sol}, ${fmt(P.ltst, 0)} h local solar time${P.doseRate != null ? `, ${fmt(P.doseRate, 1)} µSv/h` : ''}${P.groundTemp != null ? `, ground ${fmt(P.groundTemp, 0)} °C` : ''}.${P.particleEvent ? ' Solar particle event.' : ''}${P.radiationMeasured === false ? ' Radiation is not measured here: the dose uses a typical Gale value.' : ''}</p>` : '';
   $('plan').innerHTML = `${rows}<p class="status ${planOk(PLAN) ? '' : 'bad'}"><i></i>${PLAN_NAMES[PLAN.id] || PLAN.title}: ${planOk(PLAN) ? 'within all limits' : 'exceeds limits'}</p>
+    <div class="trip"><button id="tripBtn" type="button"></button><span id="tripState"></span></div>
     <table>${cell('Distance', fmt(s.total_distance_km, 2) + ' km')}${cell('Time', fmt(s.total_time_hours, 1) + ' h')}${cell('Climb', '+' + fmt(s.total_elevation_gain_m, 0) + ' m')}
     ${cell('Oxygen left', fmt(s.o2_remaining_pct, 0) + ' %')}${cell('Battery left', fmt(s.battery_remaining_pct, 0) + ' %')}${cell('Dose', fmt(s.total_dose_msv, 3) + ' mSv')}</table>
     <p class="note">Visits: ${PLAN.targets.join(', ') || 'none'}. Limits: ${m.evaHours} h, ${m.maxKm} km, ${m.maxDose} mSv.</p>${when}
     ${PLAN.warnings.map(w => `<p class="warn">${w}</p>`).join('')}`;
   document.querySelectorAll('#plan tr.row').forEach(r => r.onclick = () => {
-    PLAN = PLANS.find(p => p.id === r.dataset.p); layout(); showPlan(); t0 = performance.now(); });
+    PLAN = PLANS.find(p => p.id === r.dataset.p); layout(); showPlan(); startTrip(); });
+  $('tripBtn').onclick = tripClick; walk.shown = ''; drawTrip();
+}
+// ---------- the trip: once along the route, then wait ----------
+// The astronaut goes the chosen route once, from the base through the stops and back, and
+// stops there. Nothing moves again until a route is chosen (the same one counts) or
+// "Go again" is pressed. "Pause" holds the trip where it is.
+function startTrip() {
+  if (!PLAN) return;
+  const detour = walk.detour;
+  Object.assign(walk, {u: 0, done: false, paused: false, hold: false, detour: null, names: null});
+  if (detour) { layout(); if (routeCurve) walk.base = routeCurve.getLength(); }   // back to the planned route
+  clearZone(); drawTrip();
+}
+function tripClick() {
+  if (walk.done) return startTrip();
+  walk.paused = !walk.paused; drawTrip();
+}
+function drawTrip() {
+  const b = $('tripBtn'); if (!b) return;
+  const pct = Math.round(Math.min(walk.u, 1) * 100);
+  const key = walk.done ? 'done' : (walk.paused ? 'p' : walk.hold ? 'h' : 'm') + pct;
+  if (key === walk.shown) return;                  // called every frame: touch the page only on change
+  walk.shown = key;
+  b.textContent = walk.done ? 'Go again' : walk.paused ? 'Resume' : 'Pause';
+  $('tripState').textContent = walk.done ? 'Arrived back at the base. Choose a route or go again.'
+    : walk.paused ? `Paused at ${pct} % of the route.` : walk.hold ? `Waiting at ${pct} % of the route.`
+    : `On the way: ${pct} % of the route.`;
 }
 // ---------- plan your own walk: place a base and points, ask the planner for the routes ----------
 // Needs the app server (scripts/serve.py): it runs the Python planner. Opened any other way
@@ -1114,24 +1146,23 @@ function stepWalk(now) {
   const dt = walk.last ? Math.min(now - walk.last, 100) : 0; walk.last = now;
   if (!routeCurve || !walker.visible) return;
   if (walk.plan !== PLAN) {                        // another plan was chosen or planned: start it from the base
-    Object.assign(walk, {plan: PLAN, u: 0, detour: null, names: null, hold: false});
+    Object.assign(walk, {plan: PLAN, u: 0, detour: null, names: null, hold: false, done: false, paused: false});
     walk.base = routeCurve.getLength(); clearZone();
   }
   if (walk.zone && now > walk.zoneUntil) clearZone();
-  const watching = DV && devilPoints.visible && toggles.avoid && toggles.avoid[1];
+  const moving = !walk.done && !walk.paused;
+  const watching = moving && DV && devilPoints.visible && toggles.avoid && toggles.avoid[1];
   if (!watching) { if (walk.hold && !walk.pending) walk.hold = false; }
   else if (!walk.pending) {
     const z = threat();
     if (walk.hold) { if (!z) { walk.hold = false; say('The dust devil has passed. Walking on.'); } }
     else if (z && now > walk.cool) avoidDevil(z, now);
   }
-  if (!walk.hold) {
+  if (!walk.hold && moving) {
     walk.u += dt / (42000 * routeCurve.getLength() / walk.base);       // the same pace on any route
-    if (walk.u >= 1) {                             // back at the base: the next walk follows the plan again
-      walk.u = 0;
-      if (walk.detour) { walk.detour = null; walk.names = null; layout(); walk.base = routeCurve.getLength(); }
-    }
+    if (walk.u >= 1) { walk.u = 1; walk.done = true; }                 // arrived: stay until told to go again
   }
+  drawTrip();
   walker.position.copy(routeCurve.getPointAt(Math.min(walk.u, 1))).y += 7;
 }
 window.__walk = walk;
