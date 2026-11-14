@@ -1,7 +1,3 @@
 ﻿.idea
 .venv/
 __pycache__/
-*.pyc
-
-# Generated site data (regenerate with scripts/make_stub_site.py)
-data/
