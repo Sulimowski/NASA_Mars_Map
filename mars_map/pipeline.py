@@ -275,7 +275,7 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
               check_radio: bool = True, shelters: bool = False,
               check_physiology: bool = True, start_h: float | None = None,
               dust_devils: bool = True, vehicle: str = "astronaut",
-              rover: RoverParams | None = None) -> EvaPlanSet:
+              rover: RoverParams | None = None, progress=None) -> EvaPlanSet:
     """Plan the EVA of a site for one sol.
 
     sol       -- a sol of site.series (default: the first one).
@@ -290,25 +290,32 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     check_physiology -- walk every plan through the astronaut simulator (a few seconds).
     vehicle   -- "astronaut" (on foot) or "rover" (wheels, battery, solar panels,
                  regenerative braking; see rover.py). `rover` sets the rover's parameters.
+    progress  -- optional callback progress(done, next, label): the share of the work done
+                 (0..1), the share done when the stage now starting ends, and its name. The
+                 shares are the usual time of each stage, for a progress bar.
     """
     if vehicle not in ("astronaut", "rover"):
         raise ValueError(f"unknown vehicle '{vehicle}', expected 'astronaut' or 'rover'")
     if vehicle == "rover":
         return _plan_site_rover(site, sol, ltst_h, env, use_environment, rover or RoverParams(),
-                                strategies, check_radio)
+                                strategies, check_radio, progress)
     timings: dict[str, float] = {}
     clock = time.perf_counter
+    report = progress or (lambda done, nxt, label: None)
 
     t = clock()
+    report(0.0, 0.10 if env is None else 0.0, "Loading the site")
     if env is None and use_environment:
         env = Environment(site)
     timings["environment_build"] = clock() - t
 
     t = clock()
+    report(0.10, 0.13, "Radiation and temperature maps")
     conditions = build_conditions(site, env, sol, ltst_h)
     timings["environment_maps"] = clock() - t
 
     t = clock()
+    report(0.13, 0.15, "Ground model")
     suit = suit or SuitParams()
     terrain = build_astronaut_terrain(site, suit=suit, dose_rate_msv_h=conditions.dose_rate_msv_h,
                                       ground_temp_c=conditions.ground_temp_c)
@@ -333,6 +340,7 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
         # first one the astronaut simulator does not fail is taken (the heat of the day
         # changes how hard the same climb is).
         t = clock()
+        report(0.15, 0.40, "Choosing the start time (dust devils)")
         default_h = router.start_h
         probe = router.plan("science", check_radio=False)
         by = [(float(h), float(e)) for h, e in probe.dust_devils.get("by_start") or []]
@@ -358,8 +366,11 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
         timings["start_time"] = clock() - t
 
     plans: dict[str, MissionPlan] = {}
-    for name in strategies or list(router.mover.strategies):
+    names = strategies or list(router.mover.strategies)
+    for i, name in enumerate(names):
         t = clock()
+        title = router.mover.strategies[name].title if name in router.mover.strategies else name
+        report(0.40 + 0.15 * i / len(names), 0.40 + 0.15 * (i + 1) / len(names), f"Route: {title}")
         plans[name] = router.plan(name, check_radio=check_radio)
         timings[f"plan_{name}"] = clock() - t
         if conditions.particle_event:
@@ -371,6 +382,7 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
                         sol_assessment=sol_assessment(site, conditions.sol, suit.config))
     if check_physiology:
         t = clock()
+        report(0.55, 0.78, "Astronaut simulator check")
         checker = checker_at(router.start_h)
         for plan in plans.values():
             plan.physiology = checker.check(plan)
@@ -380,12 +392,14 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
         # that cell is closed and the plan is made again (twice at most). A repaired plan
         # replaces the first one only if the simulator likes it better.
         t = clock()
+        report(0.78, 0.92, "Repairing what the simulator could not walk")
         for name in list(plans):
             plans[name] = _repair(plans[name], name, site, suit, conditions, devils, router.start_h,
                                   checker, check_radio)
         timings["physiology_repair"] = clock() - t
     if shelters:
         t = clock()
+        report(0.92, 0.98, "Emergency shelters")
         for name, plan in plans.items():
             result.emergency[name] = [
                 {"from": stop["name"], **router.shelter((stop["x_m"], stop["y_m"])).to_dict()}
@@ -393,12 +407,13 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
         timings["shelters"] = clock() - t
     timings["planning_total"] = sum(v for k, v in timings.items()
                                     if not k.startswith("environment"))
+    report(1.0, 1.0, "Done")
     return result
 
 
 def _plan_site_rover(site: Site, sol, ltst_h: float, env: Environment | None,
-                     use_environment: bool, rover: RoverParams, strategies, check_radio: bool
-                     ) -> EvaPlanSet:
+                     use_environment: bool, rover: RoverParams, strategies, check_radio: bool,
+                     progress=None) -> EvaPlanSet:
     """plan_site for a rover: the same stages with the wheel model, no physiology check.
 
     The panels are fed by the direct-sunlight map at ltst_h, so without an Environment
@@ -406,17 +421,21 @@ def _plan_site_rover(site: Site, sol, ltst_h: float, env: Environment | None,
     """
     timings: dict[str, float] = {}
     clock = time.perf_counter
+    report = progress or (lambda done, nxt, label: None)
 
     t = clock()
+    report(0.0, 0.15 if env is None else 0.0, "Loading the site")
     if env is None and use_environment:
         env = Environment(site)
     timings["environment_build"] = clock() - t
 
     t = clock()
+    report(0.15, 0.25, "Sunlight and radiation maps")
     conditions = build_conditions(site, env, sol, ltst_h)
     timings["environment_maps"] = clock() - t
 
     t = clock()
+    report(0.25, 0.40, "Ground model for the wheels")
     terrain = build_rover_terrain(site, rover, dose_rate_msv_h=conditions.dose_rate_msv_h,
                                   ground_temp_c=conditions.ground_temp_c,
                                   sun_w_m2=conditions.sun_w_m2)
@@ -424,8 +443,11 @@ def _plan_site_rover(site: Site, sol, ltst_h: float, env: Environment | None,
     timings["terrain_and_router"] = clock() - t
 
     plans: dict[str, MissionPlan] = {}
-    for name in strategies or list(rover.strategies):
+    names = strategies or list(rover.strategies)
+    for i, name in enumerate(names):
         t = clock()
+        report(0.40 + 0.6 * i / len(names), 0.40 + 0.6 * (i + 1) / len(names),
+               f"Rover route: {rover.strategies[name].title}")
         plan = router.plan(name, check_radio=check_radio)
         if plan.segments and rover.regen_enabled:
             plan.energy["regeneration"] = regeneration_gain(router, plan)
@@ -434,6 +456,7 @@ def _plan_site_rover(site: Site, sol, ltst_h: float, env: Environment | None,
 
     timings["planning_total"] = sum(v for k, v in timings.items()
                                     if not k.startswith("environment"))
+    report(1.0, 1.0, "Done")
     return EvaPlanSet(site, conditions, router, plans, timings,
                       sol_assessment=sol_assessment(site, conditions.sol, DEFAULT_CONFIG))
 

@@ -114,6 +114,7 @@ class Planner:
         self._conditions: dict[tuple[str, int | None], object] = {}
         self._routers: dict[tuple[str, int | None, str], EvaRouter] = {}   # per vehicle, kept for reroutes
         self._lock = threading.Lock()
+        self.jobs: dict[str, dict] = {}            # progress of running plans, by the page's job id
 
     @staticmethod
     def available() -> list[str]:
@@ -160,8 +161,16 @@ class Planner:
             raise PlanError("add at least one point to visit")
         if len(targets) > MAX_TARGETS:
             raise PlanError(f"at most {MAX_TARGETS} points")
+        job = re.sub(r"[^A-Za-z0-9_-]", "", str(req.get("job", "")))[:40] or "default"
+        self.jobs[job] = {"done": 0.0, "next": 0.0, "label": "Waiting for the planner", "vehicle": None,
+                          "t": time.time()}
+        for k in [k for k, v in self.jobs.items() if time.time() - v["t"] > 600]:
+            self.jobs.pop(k, None)                         # forget old jobs
 
         with self._lock:                                   # the planner is heavy: one at a time
+            if name not in self._sites:
+                self.jobs[job] = {"done": 0.0, "next": 0.12, "label": "Loading the site (first time)",
+                                  "vehicle": None, "t": time.time()}
             t0 = time.perf_counter()
             base, env = self._load(name)
             notes: list[str] = []
@@ -194,12 +203,22 @@ class Planner:
             measured = bool(site.series.get("radiation_msv_per_sol"))
             modes: dict[str, dict] = {}
             failed: dict[str, str] = {}
+            # progress of this request, read by GET /api/progress?job=...: the walk takes most
+            # of the time, the rover a fifth
+            weights = {v: (4.0 if v == "astronaut" else 1.0) for v in wanted}
+            total = sum(weights.values())
+            offset = 0.0
             for vehicle in wanted:                         # the same base and points for each
+                share = weights[vehicle] / total
+
+                def progress(done, nxt, label, _o=offset, _s=share, _v=vehicle):
+                    self.jobs[job] = {"done": round(_o + _s * done, 3), "next": round(_o + _s * nxt, 3),
+                                      "label": label, "vehicle": _v, "t": time.time()}
                 try:
                     if vehicle == "rover":                 # the rover planner has no start-hour choice
-                        result = plan_site(site, sol=sol, env=env, vehicle="rover")
+                        result = plan_site(site, sol=sol, env=env, vehicle="rover", progress=progress)
                     else:
-                        result = plan_site(site, sol=sol, env=env, start_h=start_h)
+                        result = plan_site(site, sol=sol, env=env, start_h=start_h, progress=progress)
                     view = plans_view(result.to_dict(), radiation_measured=measured)
                     if view is None:
                         raise RuntimeError("no plan returned")
@@ -208,6 +227,8 @@ class Planner:
                     self._routers[(name, result.conditions.sol, vehicle)] = result.router
                 except (RuntimeError, ValueError, KeyError) as e:
                     failed[vehicle] = str(e)
+                offset += share
+            self.jobs[job] = {"done": 1.0, "next": 1.0, "label": "Done", "vehicle": None, "t": time.time()}
             if not modes:
                 raise PlanError("the planner could not plan this trip: " + "; ".join(failed.values()))
             for vehicle, why in failed.items():
@@ -325,6 +346,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] == "/api/health":
             return self._json(200, {"ok": True, "sites": self.planner.available()})
+        if self.path.split("?")[0] == "/api/progress":
+            m = re.search(r"job=([A-Za-z0-9_-]{1,40})", self.path)
+            state = self.planner.jobs.get(m[1]) if m else None
+            return self._json(200, state or {"done": 0.0, "next": 0.0, "label": "", "vehicle": None})
         return super().do_GET()
 
     def do_POST(self):

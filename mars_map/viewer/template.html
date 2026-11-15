@@ -51,11 +51,15 @@ a{color:var(--link)}
 #labels{pointer-events:none;overflow:hidden;box-shadow:inset 0 0 170px rgba(0,0,0,.42)}
 
 /* ---- labels on the map ---- */
+/* Map lettering, not boxes: light text with a dark halo reads on bright and dark ground
+   alike, like the names on a printed map. The number is a small coloured figure. */
 .tag{position:absolute;transform:translate(-50%,-100%);white-space:nowrap;pointer-events:auto;cursor:pointer;
-  background:rgba(18,20,23,.88);color:#eceef0;border:1px solid #000;padding:1px 7px 1px 0;font-size:11.5px;line-height:16px}
-.tag b{display:inline-block;min-width:17px;text-align:center;margin-right:6px;background:#4a5058;color:#fff;font-weight:600}
-.tag.rover b{background:#a8521f} .tag.base b{background:#35805a}
-.tag:hover{background:#2a2f35} .tag.on{background:var(--sel)}
+  color:#f3efe6;font-size:11.5px;font-weight:600;line-height:15px;padding:0 2px 1px;letter-spacing:.01em;
+  text-shadow:0 0 2px #000,0 0 3px #000,0 1px 4px rgba(0,0,0,.9),1px 0 1px #000,-1px 0 1px #000,0 -1px 1px #000,0 1px 1px #000}
+.tag b{display:inline-block;margin-right:5px;font-weight:700;color:#cfd5dc}
+.tag.rover b{color:#ff9a62} .tag.base b{color:#6fe0a0} .tag.mineral b{color:#ffd45c}
+.tag:hover{color:#fff} .tag:hover b{color:#fff}
+.tag.on{color:#fff;border-bottom:2px solid var(--link)} .tag.on b{color:var(--link)}
 
 /* ---- panel content ---- */
 section{border-bottom:1px solid var(--line);padding:0 0 9px}
@@ -121,6 +125,8 @@ svg.hours{display:block;width:100%;height:64px;margin-top:8px;overflow:visible}
 .warn{margin:6px 0 0;color:var(--warn)}
 #edit{padding:0 12px}
 #edit .row button{flex:1;white-space:nowrap;padding:4px 6px}
+.prog{height:4px;margin:2px 0 5px;background:#2a2f35;border:1px solid #000;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3f8fd6,#7db3ea);transition:width .12s linear}
 p.facts{margin:4px 0 0}
 .modes{display:flex;gap:6px;margin:0 0 8px}
 .modes button{flex:1;font:inherit;text-align:left;color:var(--text);background:#30353c;border:1px solid #4a5058;padding:5px 9px;cursor:pointer}
@@ -891,12 +897,42 @@ function resetWalk() {
   selected = -1; $('detail').style.display = 'none';
   buildPins(); listStops(); layout(); showPlan(); drawEdit();
 }
+// Progress of a plan: the server names the stage it is in and the share of the work done
+// when the stage starts and when it ends (GET /api/progress); between two reports the bar
+// creeps towards the end of the stage, slower and slower, so it never stalls nor overshoots.
+const prog = {job: '', done: 0, next: 0, label: '', since: 0, shown: 0, t0: 0, timer: null};
+function progressStart() {
+  Object.assign(prog, {job: 'p' + Math.random().toString(36).slice(2, 10), done: 0, next: .05,
+                       label: 'Sending the points', since: performance.now(), shown: 0, t0: performance.now()});
+  clearInterval(prog.timer);
+  let polling = false;
+  prog.timer = setInterval(async () => {
+    const now = performance.now();
+    const span = Math.max(prog.next - prog.done, 0), stage = Math.max(span * 35000, 1500);   // ~35 s for all
+    const target = prog.done + span * (1 - Math.exp(-(now - prog.since) / stage));
+    prog.shown = Math.max(prog.shown, Math.min(target, .995));
+    const bar = $('progBar'), lab = $('progLabel');
+    if (bar) bar.style.width = (prog.shown * 100).toFixed(1) + '%';
+    if (lab) lab.textContent = `${prog.label} · ${Math.round((now - prog.t0) / 1000)} s`;
+    if (polling) return;
+    polling = true;
+    try {
+      const s = await fetch('/api/progress?job=' + prog.job).then(r => r.json());
+      if (s.label && (s.label !== prog.label || s.done !== prog.done)) {
+        if (s.label !== 'Done') prog.label = s.label;
+        prog.done = s.done; prog.next = Math.max(s.next, s.done); prog.since = performance.now();
+      }
+    } catch (e) { /* the bar keeps creeping */ }
+    polling = false;
+  }, 120);
+}
+function progressStop() { clearInterval(prog.timer); prog.timer = null; }
 async function planWalk() {
   if (busy || stops.length < 2) return;
-  busy = true; editBad = false; editMsg = 'Planning the routes. This takes 5–20 seconds…'; drawEdit();
+  busy = true; editBad = false; editMsg = ''; progressStart(); drawEdit();
   try {
     const r = await fetch('/api/plan', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({site: D.name, sol: SITE_PLANS ? SITE_PLANS.sol : null, start: [stops[0].x, stops[0].y],
+      body: JSON.stringify({site: D.name, job: prog.job, sol: SITE_PLANS ? SITE_PLANS.sol : null, start: [stops[0].x, stops[0].y],
         targets: stops.slice(1).map(s => ({name: s.name, x: s.x, y: s.y, priority: s.priority, dwell: s.dwell, note: s.custom ? '' : (s.note || '')}))})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('server answered ' + r.status));
@@ -909,13 +945,13 @@ async function planWalk() {
     editMsg = `Planned in ${j.seconds} s.` + (j.notes.length ? ' ' + j.notes.join(' ') : '');
     buildPins(); layout(); showPlan(); t0 = performance.now();
   } catch (e) { editBad = true; editMsg = 'Could not plan: ' + e.message; }
-  busy = false; drawEdit();
+  progressStop(); busy = false; drawEdit();
 }
 function drawEdit() {
   canvas.classList.toggle('placing', !!placing);
   const n = stops.length - 1, ready = live && n > 0 && !busy;
   // one status line: what a click on the map does now, or what the planner said
-  const line = busy ? 'Planning, 5–20 s…'
+  const line = busy ? ''
     : placing === 'base' ? 'Click the map: base.'
     : placing === 'point' ? 'Click the map to add points. Esc when done.'
     : editMsg ? editMsg
@@ -926,6 +962,7 @@ function drawEdit() {
       <button data-a="point" class="${placing === 'point' ? 'on' : ''}" title="Add points to visit">+ Points</button>
       <button data-a="clear"${n ? '' : ' disabled'} title="Remove all points">Clear</button>
       <button data-a="plan" class="go"${ready ? '' : ' disabled'} title="${live ? 'Plan three routes through the points' : 'Needs scripts\\serve.py'}">${busy ? '…' : 'Plan'}</button></div>
+    ${busy ? `<div class="prog"><i id="progBar" style="width:${(prog.shown * 100).toFixed(1)}%"></i></div><p class="note" id="progLabel">${prog.label}</p>` : ''}
     ${line ? `<p class="${editBad || (live === false && !editMsg && !placing) ? 'warn' : 'note'}">${line}</p>` : ''}
     ${!PLANS.length && SITE_PLANS && !busy ? '<p class="note"><a href="#" data-a="example">Example walk</a> (precomputed, works offline)</p>' : ''}`;
   document.querySelectorAll('#edit button, #edit a[data-a]').forEach(b => b.onclick = e => {
@@ -1356,6 +1393,7 @@ if (D.normals) { uniforms.uNormal.value = await texture(D.normals); uniforms.uHa
 if (SAND) { const t = await texture(SAND.tex); t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; uniforms.uSand.value = t; }
 sun(); $('op').oninput(); $('exv').textContent = '1.00'; layout();
 { const m = location.hash.match(/level=([a-z]+)/), k = m ? LEVELS.findIndex(l => l.id === m[1]) : -1; level = -1; setLevel(k >= 0 ? k : SURF); }
+if (/(^#|&)walk=example/.test(location.hash) && SITE_PLANS) resetWalk();   // view3d.html#walk=example opens with the example walk
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight; if (!w || !h) return;
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
