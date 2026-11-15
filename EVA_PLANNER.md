@@ -46,6 +46,7 @@ leg   = route_segment(site, (100, 200), (900, 1500))
 | `mars_map/astronaut_terrain.py` | Ground model: boot sinkage, speed and energy factors, impassable mask, weather rasters |
 | `mars_map/astronaut_router.py` | Route search, smoothing, target choice, strategies, shelter. `EvaRouter` |
 | `mars_map/radio.py` | Line of sight to the base with the first Fresnel zone |
+| `mars_map/rover.py` | A wheeled rover for the same router: wheels on soil, battery, solar panels, regenerative braking |
 | `mars_map/pipeline.py` | Environment -> ground model -> router -> three plans -> physiology check -> JSON |
 | `mars_eva_sim/` | The astronaut model: walking physics used by the router, and the sequential simulator that checks every finished plan |
 
@@ -158,6 +159,62 @@ the walk has a clock (`mars_map/dust_devils.py`):
   new searches only (`EvaRouter.leg_avoiding`), about 1 s. The page waits when the vortex
   clears sooner than a detour would cost (real drift ~6 m/s against the plan's walking
   speed) and never drops a stop to save a short wait.
+
+## Rover
+
+The same planner drives a wheeled rover instead of a walking astronaut:
+
+```bash
+.venv\Scripts\python -m mars_map.pipeline --vehicle rover              # rover_plans.json, rover_plans.png
+.venv\Scripts\python -m mars_map.pipeline --vehicle rover --no-regen   # the same without regeneration
+```
+
+```python
+from mars_map.pipeline import plan_site
+from mars_map.rover import RoverParams
+
+result = plan_site(site, sol=0, vehicle="rover", rover=RoverParams(battery_wh=6000))
+result.plans["eco"].energy        # where the battery energy went
+```
+
+`mars_map/rover.py` holds the model; the router is the same one, it only asks the rover
+instead of the astronaut what a step costs. Two plans: `eco` (least battery) and `science`
+(most targets). No oxygen, no dose limit, no physiology check.
+
+- **Ground.** Bekker wheel sinkage and compaction resistance from the same soil moduli as the
+  boot model. Rolling resistance is about 0.09 on firm ground and 0.24 in loose sand. Rock
+  cover above 30 % and slopes above 20 degrees are impassable for the wheels.
+- **Driving.** Force along the slope = weight x (rolling resistance + sine of the slope).
+  Top speed 8 km/h, lower on rough ground, on climbs (750 W of motor power) and on descents.
+- **Battery.** 4 kWh. Drains: driving through a 75 % efficient drivetrain, plus 120 W that is
+  always on. It may not fall below a 20 % reserve at any point of the route.
+- **Solar panels.** Fed by the direct-sunlight map of the chosen sol and hour, so a rover in
+  the shadow of a cliff gets nothing. About 160 W in the open at 11 h on the stub.
+- **Regenerative braking.** On a descent steeper than the rolling resistance the slope pushes
+  the rover and the motors return 55 % of that push to the battery, up to 600 W.
+- **Full battery.** It takes no more charge. The plan tracks the charge step by step and
+  reports what was offered to a full battery as `lost_full_battery_wh`.
+
+How much regeneration gives depends on the relief, and it is modest. Rolling resistance eats
+the first 5 to 7 degrees of any descent, so on the stub (general slope 3 degrees) it returns
+about 1 % of the driving energy. On the stub with its relief doubled (median slope 9 degrees)
+it returns about 5 %. Down a steady 12 degree slope it gives back about a fifth of what the
+climb cost.
+
+A rover plan in the JSON has `vehicle: "rover"`, no oxygen values, and:
+
+```
+energy        battery_wh, start/end/min_charge_pct, drive_wh, hotel_wh, regenerated_wh, solar_wh,
+              parked_net_wh, lost_full_battery_wh,
+              regeneration{driving_net_wh_with_regen, driving_net_wh_without_regen, saved_wh, saved_pct}
+legs[]        also drive_wh, hotel_wh, regen_wh, solar_wh
+waypoints[]   also power_w (net battery power, negative = charging), regen_wh, solar_wh (running totals)
+```
+
+Rover assumptions to replace: everything in `RoverParams`. The chassis is sized after the
+Apollo lunar rover. Known gaps: sunlight is taken for one hour of the sol, not for each hour
+of the drive; only direct light counts, so the panels are understated on dusty sols; the cold
+does not change the battery or the heater load.
 
 ## Emergency: solar particle event
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,6 +60,39 @@ class ShelterMaps:
     base: Cell
 
 
+def build_metric_cubes(model: Any, state: Any, **metric_args: Any) -> dict[str, FloatArray]:
+    """Evaluate every edge of the grid once and collect the named costs.
+
+    Works for any ``TraversalModel``: the model's ``edge_metrics`` decides which
+    costs exist. Each returned cube is ``[8, rows, cols]``; refused edges are ``inf``.
+
+    Args:
+        model: an astronaut's or a rover's evaluator.
+        state: the reference state every edge is priced for.
+        metric_args: extra keyword arguments passed to ``edge_metrics``.
+    """
+    rows, cols = model.rows, model.cols
+    shape = (len(NEIGHBOR_OFFSETS), rows, cols)
+    cubes: dict[str, FloatArray] = {}
+    for row in range(rows):
+        for col in range(cols):
+            if not model.is_walkable((row, col)):
+                continue
+            for direction, (d_row, d_col, factor) in enumerate(NEIGHBOR_OFFSETS):
+                nb = (row + d_row, col + d_col)
+                if not model.in_bounds(nb):
+                    continue
+                metrics = model.edge_metrics((row, col), nb, factor * model.cell_size_m, state,
+                                             **metric_args)
+                if metrics is None:
+                    continue
+                for name, value in metrics.items():
+                    if name not in cubes:
+                        cubes[name] = np.full(shape, math.inf)
+                    cubes[name][direction, row, col] = value
+    return cubes
+
+
 def build_edge_cost_cubes(evaluator: EdgeEvaluator, pace: Pace, t_s: float,
                           fatigue_level: float) -> EdgeCostCubes:
     """Evaluate every edge of the grid once for a reference state.
@@ -69,32 +102,15 @@ def build_edge_cost_cubes(evaluator: EdgeEvaluator, pace: Pace, t_s: float,
         t_s: mission time the environment is sampled at.
         fatigue_level: whole-body fatigue of the reference crew member.
     """
-    rows, cols = evaluator.rows, evaluator.cols
-    shape = (len(NEIGHBOR_OFFSETS), rows, cols)
-    time_s = np.full(shape, math.inf)
-    o2_kg = np.full(shape, math.inf)
-    energy_j = np.full(shape, math.inf)
-    risk = np.full(shape, math.inf)
-    length_m = np.full(shape, math.inf)
     state = evaluator.standard_label(t_s, fatigue_level)
-    for row in range(rows):
-        for col in range(cols):
-            if not evaluator.is_walkable((row, col)):
-                continue
-            for direction, (d_row, d_col, factor) in enumerate(NEIGHBOR_OFFSETS):
-                nb = (row + d_row, col + d_col)
-                if not evaluator.in_bounds(nb):
-                    continue
-                tr = evaluator.walk_edge((row, col), nb, factor * evaluator.cell_size_m, state, pace)
-                if tr is None:
-                    continue
-                time_s[direction, row, col] = tr.dt_s
-                o2_kg[direction, row, col] = tr.d_o2_kg
-                energy_j[direction, row, col] = tr.energy_j
-                risk[direction, row, col] = tr.risk
-                length_m[direction, row, col] = tr.distance_m
-    return EdgeCostCubes(time_s=time_s, o2_kg=o2_kg, energy_j=energy_j, risk=risk,
-                         length_m=length_m)
+    cubes = build_metric_cubes(evaluator, state, pace=pace)
+    shape = (len(NEIGHBOR_OFFSETS), evaluator.rows, evaluator.cols)
+
+    def cube(name: str) -> FloatArray:
+        return cubes[name] if name in cubes else np.full(shape, math.inf)
+
+    return EdgeCostCubes(time_s=cube("time_s"), o2_kg=cube("o2_kg"), energy_j=cube("energy_j"),
+                         risk=cube("risk"), length_m=cube("length_m"))
 
 
 def reverse_dijkstra(weight: FloatArray, sources: Iterable[Cell]) -> FloatArray:

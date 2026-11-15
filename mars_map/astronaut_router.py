@@ -80,15 +80,16 @@ class Strategy:
     """What a route tries to minimise and how much of the limits a plan may use."""
     name: str
     title: str = ""
-    time_weight: float = 1.0        # cost per second of walking
-    o2_weight: float = 0.0          # cost per litre of O2 (on the time scale)
+    time_weight: float = 1.0        # cost per second of travel
+    o2_weight: float = 0.0          # cost of effort: oxygen for a person, battery for a rover
+                                    # (both on the time scale, see the movers)
     looseness_weight: float = 0.3   # extra cost on loose or rocky ground
     steep_weight: float = 0.15      # extra cost per (degree above max_slope_deg)^2
     nodata_weight: float = 1.0      # how much the coarse-data penalty counts
     rad_power: float = 0.0          # cost *= (dose rate / open-ground rate) ** rad_power
     rad_linear: float = 0.0         # cost += rad_linear * dose rate (mSv/h) * seconds
     budget_use: float = 1.0         # share of every limit the plan may use
-    saving: str = ""                # "", "o2" or "dose": the resource the plan saves
+    saving: str = ""                # "", "o2", "dose" or "energy": the resource the plan saves
     saving_weight: float = 0.0      # value an optional target must bring per 100 % of it
     science_weight: float = 1.0     # weight of science_score next to the target priority
     devil_weight: float = 2400.0    # seconds of walking one expected dust devil encounter is worth
@@ -141,6 +142,10 @@ class RouteSegment:
     name_from: str = ""
     name_to: str = ""
     vertices_m: list[tuple[float, float]] = field(default_factory=list)   # corners after smoothing
+    # Energy split of the leg when the mover reports one (a rover: drive, regen, solar), Wh.
+    extra: dict = field(default_factory=dict)
+    # Net battery energy drawn up to every sample, unrounded; negative steps are charging.
+    energy_cum_wh: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def resources(self) -> list[float]:
         return [self.duration_min * 60.0, self.distance_m, self.o2_liters, self.energy_wh,
@@ -148,6 +153,7 @@ class RouteSegment:
 
     def to_dict(self) -> dict:
         return {
+            **{k: round(v, 1) for k, v in self.extra.items()},
             "from": self.name_from, "to": self.name_to,
             "distance_m": round(self.distance_m, 1),
             "duration_min": round(self.duration_min, 1),
@@ -192,12 +198,19 @@ class MissionPlan:
     physiology: dict = field(default_factory=dict)
     # Expected dust devil encounters of the walk, the chance of one, and other start hours.
     dust_devils: dict = field(default_factory=dict)
+    # --- added with the rover ---
+    vehicle: str = "astronaut"                  # who travels: "astronaut" or "rover"
+    energy: dict = field(default_factory=dict)  # battery balance of a rover plan, Wh and percent
+    # Battery charge in percent at every profile sample of every leg, with the battery's
+    # limits applied (a full battery takes no more charge).
+    charge_pct: list = field(default_factory=list, repr=False)
     site: Site | None = field(default=None, repr=False, compare=False)
     suit: SuitParams | None = field(default=None, repr=False, compare=False)
 
     def waypoints(self, step_m: float = 6.0) -> list[dict]:
         """Route samples of the whole plan with running totals, thinned to about step_m."""
         suit = self.suit or SuitParams()
+        o2_tank = getattr(suit, "o2_tank_l", None)
         out: list[dict] = []
         base = dict.fromkeys(("dist_m", "t_min", "o2_l", "energy_wh", "dose_msv"), 0.0)
         radio = self.radio.get("samples", [])
@@ -222,9 +235,14 @@ class MissionPlan:
                     "dose_rate_usv_h": p["dose_rate_usv_h"],
                     "dose_msv": round(base["dose_msv"] + p["dose_msv"], 4),
                     "temp_c": p["temp_c"],
-                    "o2_pct": round(100.0 * (1.0 - o2 / suit.o2_tank_l), 1),
-                    "battery_pct": round(100.0 * (1.0 - wh / suit.battery_wh), 1),
+                    "power_w": p["power_w"],
+                    "o2_pct": round(100.0 * (1.0 - o2 / o2_tank), 1) if o2_tank else None,
+                    "battery_pct": (self.charge_pct[leg_i][i] if self.charge_pct
+                                    else round(100.0 * (1.0 - wh / suit.battery_wh), 1)),
                 }
+                for key in ("regen_wh", "solar_wh"):
+                    if key in p:
+                        w[key] = p[key]
                 if self.site is not None:
                     lat, lon = self.site.to_latlon(p["x_m"], p["y_m"])
                     w["lat"], w["lon"] = round(lat, 6), round(lon, 6)
@@ -249,6 +267,7 @@ class MissionPlan:
     def to_dict(self, waypoint_step_m: float = 6.0) -> dict:
         return {
             "strategy": self.strategy,
+            "vehicle": self.vehicle,
             "title": self.title,
             "feasible": self.feasible,
             "warnings": self.warnings,
@@ -259,8 +278,9 @@ class MissionPlan:
                 "total_elevation_gain_m": round(self.total_elevation_gain_m, 1),
                 "max_slope_deg": round(self.max_slope_deg, 1),
                 "total_time_hours": round(self.total_time_hours, 2),
-                "o2_used_liters": round(self.total_o2_liters, 1),
-                "o2_remaining_pct": round(self.o2_remaining_pct, 1),
+                "o2_used_liters": round(self.total_o2_liters, 1) if self.vehicle != "rover" else None,
+                "o2_remaining_pct": (round(self.o2_remaining_pct, 1) if self.vehicle != "rover"
+                                     else None),
                 "energy_used_wh": round(self.total_energy_wh, 1),
                 "battery_remaining_pct": round(self.battery_remaining_pct, 1),
                 "total_dose_msv": round(self.total_dose_msv, 3),
@@ -271,6 +291,7 @@ class MissionPlan:
             },
             "limits": self.limits,
             "usage_pct": self.usage_pct,
+            "energy": self.energy,
             "stops": self.stops,
             "legs": [s.to_dict() for s in self.segments],
             "radio": {k: v for k, v in self.radio.items() if k != "samples"},
@@ -353,16 +374,71 @@ class _Grid:
                      self.rate[s], self.heater[s], imp, self.res, self.devil[s])
 
 
-def _generalized_cost(strat: Strategy, t, o2, loose, pen, rate, slope_abs_deg, rate_ref: float,
-                      mission: MissionParams, devil=None):
+class AstronautMover:
+    """The astronaut model behind the interface the router plans with.
+
+    A mover answers three questions: what does one step cost, what does working at a
+    stop cost, and what are the limits. The router knows nothing else about who travels,
+    so a rover (rover.RoverParams) plugs in by answering the same questions.
+
+    step()  -> (time_s, o2_litres, energy_wh, effort, parts)
+               energy_wh is net battery energy and may be negative (charging);
+               effort is what an economical route minimises, on the time scale, never
+               negative; parts is an optional split of the energy for the report.
+    dwell() -> (time_s, o2_litres, energy_wh, parts)
+    The last argument of both is the terrain model's `heater_w` raster value: the
+    electric load the surroundings add (suit heaters; for a rover, minus the solar input).
+    """
+    kind = "astronaut"
+    uses_oxygen = True
+    strategies = STRATEGIES
+    start_charge_frac = 1.0
+    energy_floor_wh = 0.0            # energy drawn cannot fall below this: the battery starts full
+
+    def __init__(self, suit: SuitParams, mission: MissionParams):
+        self.suit, self.mission = suit, mission
+        self.soft_slope_deg = mission.max_slope_deg
+        self.hard_slope_deg = mission.hard_max_slope_deg
+        self.battery_wh = suit.battery_wh
+        self.o2_tank_l = suit.o2_tank_l
+
+    def step(self, dist_m, rise_m, eta, speed_mult, aux_w=0.0):
+        t, _, o2, wh = locomotion(dist_m, rise_m, eta, speed_mult, self.mission, self.suit, aux_w)
+        return t, o2, wh, _O2_SECONDS_PER_LITRE * o2, None
+
+    def dwell(self, minutes: float, aux_w: float = 0.0):
+        return (*dwell(minutes, aux_w, self.suit), None)
+
+    def budgets(self, use: float = 1.0) -> list[float]:
+        m, s = self.mission, self.suit
+        return [m.eva_max_hours * 3600.0 * (1.0 - m.return_reserve_frac) * use,
+                m.max_distance_km * 1000.0 * use,
+                s.o2_tank_l * (1.0 - s.o2_reserve_frac) * use,
+                s.battery_wh * (1.0 - s.battery_reserve_frac) * use,
+                m.max_dose_msv * use]
+
+    def limits(self) -> dict:
+        m, s = self.mission, self.suit
+        return {"eva_max_hours": m.eva_max_hours, "return_reserve_frac": m.return_reserve_frac,
+                "max_distance_km": m.max_distance_km, "max_dose_msv": m.max_dose_msv,
+                "o2_tank_l": s.o2_tank_l, "o2_reserve_frac": s.o2_reserve_frac,
+                "battery_wh": s.battery_wh, "battery_reserve_frac": s.battery_reserve_frac,
+                "max_slope_deg": m.max_slope_deg, "hard_max_slope_deg": m.hard_max_slope_deg}
+
+    def build_terrain(self, site: Site, **weather) -> AstronautTerrainModel:
+        return build_astronaut_terrain(site, suit=self.suit, **weather)
+
+
+def _generalized_cost(strat: Strategy, t, effort, loose, pen, rate, slope_abs_deg, rate_ref: float,
+                      soft_slope_deg: float, devil=None):
     """What the search minimises for one step; the single definition of route quality.
 
     devil: dust devil susceptibility of the cell; with the strategy's rate of the hour it
-    adds devil_weight seconds per expected encounter.
+    adds devil_weight seconds per expected encounter (for any mover).
     """
-    cost = strat.time_weight * t + strat.o2_weight * _O2_SECONDS_PER_LITRE * o2
+    cost = strat.time_weight * t + strat.o2_weight * effort
     cost = cost * (1.0 + strat.looseness_weight * loose) * (1.0 + strat.nodata_weight * (pen - 1.0))
-    over = np.maximum(slope_abs_deg - mission.max_slope_deg, 0.0)
+    over = np.maximum(slope_abs_deg - soft_slope_deg, 0.0)
     cost = cost * (1.0 + strat.steep_weight * over * over)
     if strat.rad_power:
         cost = cost * (rate / rate_ref) ** strat.rad_power
@@ -373,9 +449,8 @@ def _generalized_cost(strat: Strategy, t, o2, loose, pen, rate, slope_abs_deg, r
     return cost
 
 
-def _edge_arrays(g: _Grid, strat: Strategy, mission: MissionParams, suit: SuitParams,
-                 rate_ref: float, edge_blocked: np.ndarray | None = None,
-                 resources: bool = False):
+def _edge_arrays(g: _Grid, strat: Strategy, mover, rate_ref: float,
+                 edge_blocked: np.ndarray | None = None, resources: bool = False):
     """Cost of stepping from every cell to each of its 8 neighbours.
 
     Returns cost (8, R, C) with inf for forbidden steps, and when asked the
@@ -384,21 +459,21 @@ def _edge_arrays(g: _Grid, strat: Strategy, mission: MissionParams, suit: SuitPa
     R, C = g.elev.shape
     cost = np.full((8, R, C), INF)
     res = np.zeros((5, 8, R, C), np.float32) if resources else None
-    hard = mission.hard_max_slope_deg
+    hard = mover.hard_slope_deg
     for k, (dr, dc) in enumerate(_DIRS):
         rs, rd = slice(max(0, -dr), R - max(0, dr)), slice(max(0, dr), R + min(0, dr))
         cs, cd = slice(max(0, -dc), C - max(0, dc)), slice(max(0, dc), C + min(0, dc))
         src, dst = (rs, cs), (rd, cd)
         d = g.res * _STEP[k]
         dh = g.elev[dst] - g.elev[src]
-        t, _, o2, wh = locomotion(d, dh, g.eta[dst], g.speed[dst], mission, suit, g.heater[dst])
-        # A step the crew member cannot power even at the slowest pace has infinite time.
+        t, o2, wh, effort, _ = mover.step(d, dh, g.eta[dst], g.speed[dst], g.heater[dst])
+        # A step the mover cannot power even at the slowest pace has infinite time.
         stuck = ~np.isfinite(t)
         if stuck.any():
-            t, o2, wh = (np.where(stuck, 0.0, a) for a in (t, o2, wh))
+            t, o2, wh, effort = (np.where(stuck, 0.0, a) for a in (t, o2, wh, effort))
         slope = np.degrees(np.arctan(np.abs(dh) / d))
-        c = _generalized_cost(strat, t, o2, g.loose[dst], g.pen[dst], g.rate[dst], slope,
-                              rate_ref, mission, g.devil[dst])
+        c = _generalized_cost(strat, t, effort, g.loose[dst], g.pen[dst], g.rate[dst], slope,
+                              rate_ref, mover.soft_slope_deg, g.devil[dst])
         bad = (slope > hard) | stuck
         if edge_blocked is not None:
             bad |= edge_blocked[k][src]
@@ -551,8 +626,11 @@ class EvaRouter:
         self.devils = devils            # dust devil risk; None: not considered
         self.start_h = start_h          # local solar hour the walk starts (with devils)
         self.suit = suit or SuitParams()
+        # `suit` may be any mover (rover.RoverParams); a plain SuitParams gets the adapter.
+        self.mover = self.suit if hasattr(self.suit, "step") else AstronautMover(self.suit,
+                                                                                 self.mission)
         self.radio_params = radio or RadioParams()
-        self.terrain = terrain or build_astronaut_terrain(site, suit=self.suit)
+        self.terrain = terrain or self.mover.build_terrain(site)
         self.corridor_cells = corridor_cells
         self.heuristic_weight = heuristic_weight
         self.smooth_tolerance = smooth_tolerance
@@ -635,7 +713,7 @@ class EvaRouter:
     def _coarse(self, strat: Strategy) -> tuple:
         """(cost lists, heuristic scale, resources (5, 8, n)) of the coarse graph for a strategy."""
         if strat.routing not in self._coarse_cost:
-            cost, res = _edge_arrays(self.coarse, strat, self.mission, self.suit, self.rate_ref,
+            cost, res = _edge_arrays(self.coarse, strat, self.mover, self.rate_ref,
                                      edge_blocked=self._edge_blocked, resources=True)
             self._coarse_cost[strat.routing] = (
                 _as_lists(cost), _min_cost_per_cell(cost), res.reshape(5, 8, -1))
@@ -785,7 +863,7 @@ class EvaRouter:
                 e = extra[r0:r1, c0:c1]
                 outside = e if outside is None else outside | e
             win = self.fine.window(r0, r1, c0, c1, outside)
-            cost, _ = _edge_arrays(win, strat, self.mission, self.suit, self.rate_ref)
+            cost, _ = _edge_arrays(win, strat, self.mover, self.rate_ref)
             scale = cost_per_cell or _min_cost_per_cell(cost)
             if not math.isfinite(scale):
                 continue
@@ -823,21 +901,22 @@ class EvaRouter:
         z = self._elevation_at(xs, ys)
         dh = np.diff(z)
         j = idx[1:]
-        t, met, o2, wh = locomotion(d, dh, fl["eta"][j], fl["speed"][j], self.mission, self.suit,
-                                    fl["heater"][j])
-        stuck = ~np.isfinite(t)              # beyond the power the crew member can hold
+        t, o2, wh, effort, parts = self.mover.step(d, dh, fl["eta"][j], fl["speed"][j],
+                                                   fl["heater"][j])
+        stuck = ~np.isfinite(t)              # beyond the power the mover can hold
         if stuck.any():
-            t, o2, wh = (np.where(stuck, 0.0, a) for a in (t, o2, wh))
+            t, o2, wh, effort = (np.where(stuck, 0.0, a) for a in (t, o2, wh, effort))
         slope = np.degrees(np.arctan(dh / d))
-        out = {"idx": idx, "rr": rr, "cc": cc, "z": z, "d": d, "dh": dh, "t": t, "met": met,
+        out = {"idx": idx, "rr": rr, "cc": cc, "z": z, "d": d, "dh": dh, "t": t,
                "o2": o2, "wh": wh, "slope": slope, "dose": fl["rate"][j] * t / 3600.0,
+               "parts": parts,
                "blocked": bool(fl["fat" if margin else "imp"][idx].any())
-               or bool((np.abs(slope) > self.mission.hard_max_slope_deg).any())
+               or bool((np.abs(slope) > self.mover.hard_slope_deg).any())
                or bool(stuck.any())}
         if strat is not None:
-            out["cost"] = _generalized_cost(strat, t, o2, fl["loose"][j], fl["pen"][j],
+            out["cost"] = _generalized_cost(strat, t, effort, fl["loose"][j], fl["pen"][j],
                                             fl["rate"][j], np.abs(slope), self.rate_ref,
-                                            self.mission, fl["devil"][j])
+                                            self.mover.soft_slope_deg, fl["devil"][j])
         return out
 
     def _line(self, x0, y0, x1, y1):
@@ -972,7 +1051,14 @@ class EvaRouter:
         cum_o2, cum_wh = lead(np.cumsum(w["o2"])), lead(np.cumsum(w["wh"]))
         cum_dose = lead(np.cumsum(w["dose"]))
         temp = self._temp[idx] if self._temp is not None else None
+        # Net battery power on the step that ends at the sample; negative = charging.
+        power = lead(np.divide(w["wh"] * 3600.0, w["t"], out=np.zeros(len(w["t"])),
+                               where=w["t"] > 0))
+        parts = {k: np.asarray(v, dtype=np.float64) for k, v in (w["parts"] or {}).items()}
         cols = {
+            "power_w": np.round(power, 1),
+            **{k: np.round(lead(np.cumsum(v)), 3) for k, v in parts.items()
+               if k in ("regen_wh", "solar_wh")},
             "x_m": np.round(xs, 1), "y_m": np.round(ys, 1),
             "elev_m": np.round(w["z"], 2),
             "dist_m": np.round(cum_d, 1),
@@ -1005,29 +1091,55 @@ class EvaRouter:
             dose_msv=float(w["dose"].sum()),
             profile=profile,
             vertices_m=list(zip(vx, vy)),
+            extra={k: float(v.sum()) for k, v in parts.items()},
+            energy_cum_wh=cum_wh,
         )
 
     # ---- mission planning --------------------------------------------------
     def _strategy(self, strategy: Strategy | str) -> Strategy:
         if isinstance(strategy, Strategy):
             return strategy
-        if strategy not in STRATEGIES:
-            raise ValueError(f"unknown strategy '{strategy}', expected one of {sorted(STRATEGIES)}")
-        return STRATEGIES[strategy]
+        known = self.mover.strategies
+        if strategy not in known:
+            raise ValueError(f"unknown strategy '{strategy}', expected one of {sorted(known)}")
+        return known[strategy]
 
     def budgets(self, use: float = 1.0) -> list[float]:
         """Limits in the order of RESOURCES, scaled by the share a plan may use."""
-        m, s = self.mission, self.suit
-        return [m.eva_max_hours * 3600.0 * (1.0 - m.return_reserve_frac) * use,
-                m.max_distance_km * 1000.0 * use,
-                s.o2_tank_l * (1.0 - s.o2_reserve_frac) * use,
-                s.battery_wh * (1.0 - s.battery_reserve_frac) * use,
-                m.max_dose_msv * use]
+        return self.mover.budgets(use)
 
     def _stop_cost(self, target: Target, cell: tuple[int, int]) -> list[float]:
         """Resources spent working at a target, in the order of RESOURCES."""
-        t, o2, wh = dwell(target.dwell_min, float(self.fine.heater[cell]), self.suit)
+        t, o2, wh, _ = self.mover.dwell(target.dwell_min, float(self.fine.heater[cell]))
         return [t, 0.0, o2, wh, float(self.fine.rate[cell]) * t / 3600.0]
+
+    def _energy_track(self, legs, order, stop) -> dict:
+        """Battery energy drawn along the plan, with the battery's limits applied.
+
+        "Used" is the energy drawn since the start, Wh. It cannot fall below the mover's
+        floor (a full battery takes no more charge), so what a descent or the Sun would
+        add beyond that is lost. For a mover that never charges this is a running sum.
+        Returns per-leg arrays of "used" at every sample, "used" after the work at each
+        leg's end, the deepest discharge and the charge that found no room.
+        """
+        floor = self.mover.energy_floor_wh
+        used = peak = wasted = 0.0
+        tracks, after = [], []
+        for leg, j in zip(legs, order + [None]):
+            free = used + leg.energy_cum_wh
+            spill = np.minimum.accumulate(np.minimum(free - floor, 0.0))
+            track = free - spill
+            wasted -= float(spill[-1])
+            used, peak = float(track[-1]), max(peak, float(track.max()))
+            tracks.append(track)
+            if j is not None:
+                used += stop[j][3]
+                if used < floor:
+                    wasted += floor - used
+                    used = floor
+                peak = max(peak, used)
+            after.append(used)
+        return {"legs": tracks, "after": after, "peak": peak, "wasted": wasted, "end": used}
 
     def _choose(self, strat: Strategy, values: list[float], stop: list, M: list, budget: list,
                 inflate: float, max_nodes: int = 200_000, MS: list | None = None,
@@ -1040,8 +1152,9 @@ class EvaRouter:
         """
         n = len(values)
         time_budget = budget[0]
-        save_i = {"o2": 2, "dose": 4}.get(strat.saving)
-        save_ref = budget[2] if save_i == 2 else self.rate_ref * time_budget / 3600.0
+        save_i = {"o2": 2, "energy": 3, "dose": 4}.get(strat.saving)
+        save_ref = (budget[save_i] if save_i in (2, 3)
+                    else self.rate_ref * time_budget / 3600.0)
         best_score, best_order, nodes = -INF, [], 0
         dv = self.devils if (self.devils is not None and strat.devil_weight and MS is not None) else None
 
@@ -1131,8 +1244,9 @@ class EvaRouter:
 
     def plan_pareto(self, targets: list[Target] | None = None, check_radio: bool = True
                     ) -> dict[str, MissionPlan]:
-        """The three alternative plans: shielded, eco, science."""
-        return {name: self.plan(name, targets, check_radio=check_radio) for name in STRATEGIES}
+        """The alternative plans of the mover (astronaut: shielded, eco, science)."""
+        return {name: self.plan(name, targets, check_radio=check_radio)
+                for name in self.mover.strategies}
 
     def _plan_legs(self, strat, order, points, cands, stop=None, M=None, inflate=1.0
                    ) -> list[RouteSegment]:
@@ -1182,20 +1296,26 @@ class EvaRouter:
             "source": dv.source,
         }
 
-    @staticmethod
-    def _totals(legs, order, stop) -> list[float]:
+    def _totals(self, legs, order, stop) -> list[float]:
+        """What the plan uses, in the order of RESOURCES; energy is the deepest discharge."""
         used = [0.0] * 5
         for leg in legs:
             used = [u + v for u, v in zip(used, leg.resources())]
         for j in order:
             used = [u + v for u, v in zip(used, stop[j])]
+        used[3] = self._energy_track(legs, order, stop)["peak"]
         return used
 
     def _assemble(self, strat, cands, order, legs, stop, scores, values, M, places, budget
                   ) -> MissionPlan:
-        m, suit, site = self.mission, self.suit, self.site
+        m, suit, site, mover = self.mission, self.suit, self.site, self.mover
         hard = self.budgets(1.0)
         elev = site.layers["elevation"]
+        track = self._energy_track(legs, order, stop)
+        start_pct = 100.0 * mover.start_charge_frac
+
+        def charge(used_wh):
+            return start_pct - 100.0 * used_wh / mover.battery_wh
 
         def stop_entry(name, kind, xy, used, arrive_s, dwell_min=0.0, **extra):
             lat, lon = site.to_latlon(*xy)
@@ -1209,40 +1329,68 @@ class EvaRouter:
                 "depart_min": round(used[0] / 60.0, 1),
                 "o2_l": round(used[2], 2), "energy_wh": round(used[3], 1),
                 "dose_msv": round(used[4], 4),
-                "o2_pct": round(100.0 * (1.0 - used[2] / suit.o2_tank_l), 1),
-                "battery_pct": round(100.0 * (1.0 - used[3] / suit.battery_wh), 1),
+                "o2_pct": (round(100.0 * (1.0 - used[2] / mover.o2_tank_l), 1)
+                           if mover.uses_oxygen else None),
+                "battery_pct": round(charge(used[3]), 1),
                 **extra,
             }
 
+        # used[3] follows the battery (limits applied), the rest are running sums.
         used = [0.0] * 5
         stops = [stop_entry("Start", "start", tuple(site.start), used, 0.0)]
-        for leg, j in zip(legs, order + [None]):
+        for i, (leg, j) in enumerate(zip(legs, order + [None])):
             used = [u + v for u, v in zip(used, leg.resources())]
+            used[3] = float(track["legs"][i][-1])
             arrive = used[0]
             if j is None:
                 stops.append(stop_entry("Return Base", "return", tuple(site.start), used, arrive))
                 break
             t = cands[j - 1]
             used = [u + v for u, v in zip(used, stop[j])]
+            used[3] = track["after"][i]
             stops.append(stop_entry(t.name, "target", (t.x_m, t.y_m), used, arrive, t.dwell_min,
                                     priority=t.priority, science_score=round(scores[j], 3),
                                     note=t.note))
 
-        o2_left = 100.0 * (1.0 - used[2] / suit.o2_tank_l)
-        bat_left = 100.0 * (1.0 - used[3] / suit.battery_wh)
+        peak = track["peak"]                      # deepest discharge on the way, Wh
+        o2_left = 100.0 * (1.0 - used[2] / mover.o2_tank_l) if mover.uses_oxygen else 100.0
+        bat_left = charge(used[3])
         hours, km = used[0] / 3600.0, used[1] / 1000.0
         warnings: list[str] = []
         if used[0] > hard[0] + 1e-6:
             warnings.append(f"Превышен лимит времени с учетом резерва: {hours:.2f} ч > "
                             f"{hard[0] / 3600:.2f} ч")
         if used[1] > hard[1] + 1e-6:
-            warnings.append(f"Превышена макс. дистанция EVA: {km:.2f} км > {m.max_distance_km:.2f} км")
+            warnings.append(f"Превышена макс. дистанция: {km:.2f} км > {hard[1] / 1000:.2f} км")
         if used[4] > hard[4] + 1e-9:
             warnings.append(f"Превышен лимит радиации: {used[4]:.2f} мЗв > {m.max_dose_msv:.2f} мЗв")
-        if used[2] > hard[2] + 1e-6 or used[3] > hard[3] + 1e-6:
+        if not mover.uses_oxygen:
+            if peak > hard[3] + 1e-6:
+                warnings.append(f"Заряд батареи в пути опускается ниже резерва "
+                                f"(минимум {charge(peak):.0f}%)")
+        elif used[2] > hard[2] + 1e-6 or peak > hard[3] + 1e-6:
             warnings.append(f"Низкий остаток СЖО после возврата (O2: {o2_left:.1f}%, "
                             f"BAT: {bat_left:.1f}%)")
         feasible = not warnings
+
+        energy = {}
+        if mover.kind == "rover":                  # a rover reports where its energy goes
+            def total(key):
+                return sum(s.extra.get(key, 0.0) for s in legs)
+
+            parked = sum(stop[j][3] for j in order)
+            energy = {
+                "battery_wh": mover.battery_wh,
+                "start_charge_pct": round(start_pct, 1),
+                "end_charge_pct": round(bat_left, 1),
+                "min_charge_pct": round(charge(peak), 1),
+                "drive_wh": round(total("drive_wh"), 1),
+                "hotel_wh": round(total("hotel_wh"), 1),
+                "regenerated_wh": round(total("regen_wh"), 1),
+                "solar_wh": round(total("solar_wh"), 1),
+                "parked_net_wh": round(parked, 1),      # work at the stops minus the Sun there
+                "lost_full_battery_wh": round(track["wasted"], 1),
+            }
 
         skipped = []
         for j, t in enumerate(cands, start=1):
@@ -1270,24 +1418,20 @@ class EvaRouter:
             skipped_targets=skipped, stops=stops,
             science_value=sum(values[j] for j in order),
             total_o2_liters=used[2], total_energy_wh=used[3],
-            limits={
-                "eva_max_hours": m.eva_max_hours,
-                "return_reserve_frac": m.return_reserve_frac,
-                "usable_hours": round(hard[0] / 3600.0, 2),
-                "max_distance_km": m.max_distance_km,
-                "max_dose_msv": m.max_dose_msv,
-                "o2_tank_l": suit.o2_tank_l, "o2_reserve_frac": suit.o2_reserve_frac,
-                "battery_wh": suit.battery_wh, "battery_reserve_frac": suit.battery_reserve_frac,
-                "max_slope_deg": m.max_slope_deg, "hard_max_slope_deg": m.hard_max_slope_deg,
-                "strategy_budget_use": strat.budget_use,
-            },
-            usage_pct={k: round(100.0 * u / lim, 1) for k, u, lim in zip(RESOURCES, used, hard)},
+            limits={**mover.limits(), "usable_hours": round(hard[0] / 3600.0, 2),
+                    "strategy_budget_use": strat.budget_use},
+            usage_pct={k: round(100.0 * u / lim, 1) for k, u, lim
+                       in zip(RESOURCES, used[:3] + [peak] + used[4:], hard)},
+            vehicle=mover.kind, energy=energy,
+            charge_pct=[np.round(charge(t), 1).tolist() for t in track["legs"]],
             site=site, suit=suit,
         )
 
     def _skip_reason(self, strat, j, order, stop, M, budget, hard) -> str:
         if stop[j] is None or M[0][j] is None or M[j][0] is None:
-            return "недостижима пешком (обрывы или запретная зона)"
+            return ("недостижима для марсохода (обрывы, валуны или запретная зона)"
+                    if self.mover.kind == "rover"
+                    else "недостижима пешком (обрывы или запретная зона)")
         alone = [a + w + b for a, w, b in zip(M[0][j], stop[j], M[j][0])]
         for name, u, lim in zip(("времени", "дистанции", "O2", "батареи", "дозы"), alone, hard):
             if u > lim:
@@ -1303,7 +1447,8 @@ class EvaRouter:
             for s in trial[1:-1]:
                 total = [u + v for u, v in zip(total, stop[s])]
             if all(u <= lim for u, lim in zip(total, budget)):
-                saved = {"o2": "кислорода", "dose": "дозы"}.get(strat.saving, "ресурсов")
+                saved = {"o2": "кислорода", "dose": "дозы",
+                         "energy": "заряда батареи"}.get(strat.saving, "ресурсов")
                 return f"необязательная, пропущена ради экономии {saved}"
         return "не помещается в лимиты вместе с более приоритетными целями"
 

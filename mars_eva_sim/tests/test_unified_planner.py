@@ -21,7 +21,8 @@ from src.physiology import capacity, life_support, metabolism, vectorized
 
 WAYPOINT_KEYS = {"leg", "x_m", "y_m", "elev_m", "dist_m", "t_min", "slope_deg", "looseness",
                  "sinkage_cm", "terrain_class", "dose_rate_usv_h", "dose_msv", "temp_c", "o2_pct",
-                 "battery_pct", "lat", "lon", "radio"}
+                 "battery_pct", "lat", "lon", "radio",
+                 "power_w"}                     # net battery power, added with the rover
 
 
 # ---- part 1: array model == scalar model ----------------------------------

@@ -22,7 +22,9 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from ..core.schemas import Cell, PhysState, SuitResources, TaskType
+from typing import Any, Callable, Sequence
+
+from ..core.schemas import Cell, Label, PhysState, SuitResources, TaskType
 from ..physiology import radiation
 from .constraints import ConstraintChecker
 from .pareto_astar import ParetoAStar, SearchDiagnostics
@@ -56,6 +58,45 @@ def _outer_edge(mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
     return mask & ~all_inside
 
 
+def explore_reachability(model: Any, checker: Any, start: Any, isochrones_s: Sequence[float],
+                         after_arrival: Callable[[Cell, Any], Any] | None = None
+                         ) -> ReachabilityResult:
+    """Reachability rasters for any traveller (astronaut or rover).
+
+    A goal-free run of the label search from ``start`` gives the cheapest state
+    on arrival at every cell. ``round_trip_ok`` marks the cells where the state
+    still satisfies the constraints after ``after_arrival`` (for example after a
+    task has been worked there); without ``after_arrival`` it equals ``reachable``.
+
+    Args:
+        model: the traveller's ``TraversalModel``.
+        checker: the traveller's ``Constraints``.
+        start: start label.
+        isochrones_s: time limits of the isochrone masks, s.
+        after_arrival: ``(cell, label) -> label`` applied before the final check.
+    """
+    best, diagnostics = ParetoAStar(model, checker).explore(start, max_labels_per_cell=1)
+    shape = (model.rows, model.cols)
+    arrival = np.full(shape, math.inf)
+    distance = np.full(shape, math.inf)
+    reachable = np.zeros(shape, dtype=np.bool_)
+    round_trip = np.zeros(shape, dtype=np.bool_)
+    farthest = 0.0
+    for cell, label in best.items():
+        arrival[cell] = label.t_s - start.t_s
+        distance[cell] = label.distance_m
+        reachable[cell] = True
+        after = after_arrival(cell, label) if after_arrival is not None else label
+        if checker.violated(after) is None:
+            round_trip[cell] = True
+            farthest = max(farthest, label.distance_m)
+    isochrones = {limit: round_trip & (arrival <= limit) for limit in isochrones_s}
+    return ReachabilityResult(arrival_time_s=arrival, distance_m=distance, reachable=reachable,
+                              round_trip_ok=round_trip, isochrones=isochrones,
+                              point_of_no_return=_outer_edge(round_trip),
+                              max_round_trip_distance_m=farthest, diagnostics=diagnostics)
+
+
 def compute_reachability(evaluator: EdgeEvaluator, base: Cell, *, start_time_s: float,
                          maps: ShelterMaps | None = None, task: TaskType = TaskType.OBSERVATION,
                          task_duration_s: float = 0.0, dose_budget_sv: float | None = None,
@@ -77,27 +118,12 @@ def compute_reachability(evaluator: EdgeEvaluator, base: Cell, *, start_time_s: 
         cfg.radiation, None, start_time_s)
     checker = ConstraintChecker(evaluator, maps, dose_budget_sv=budget, spe_watch=spe_watch)
     start = evaluator.initial_label(base, start_time_s, resources, phys)
-    best, diagnostics = ParetoAStar(evaluator, checker).explore(start, max_labels_per_cell=1)
 
-    shape = (evaluator.rows, evaluator.cols)
-    arrival = np.full(shape, math.inf)
-    distance = np.full(shape, math.inf)
-    reachable = np.zeros(shape, dtype=np.bool_)
-    round_trip = np.zeros(shape, dtype=np.bool_)
-    farthest = 0.0
-    for cell, label in best.items():
-        arrival[cell] = label.t_s - start_time_s
-        distance[cell] = label.distance_m
-        reachable[cell] = True
-        after = label
-        if task_duration_s > 0.0:
-            work = evaluator.stationary(cell, label, task_duration_s, task)
-            after = evaluator.advance(label, cell, work, "task")
-        if checker.violated(after) is None:
-            round_trip[cell] = True
-            farthest = max(farthest, label.distance_m)
-    isochrones = {limit: round_trip & (arrival <= limit) for limit in cfg.routing.isochrones_s}
-    return ReachabilityResult(arrival_time_s=arrival, distance_m=distance, reachable=reachable,
-                              round_trip_ok=round_trip, isochrones=isochrones,
-                              point_of_no_return=_outer_edge(round_trip),
-                              max_round_trip_distance_m=farthest, diagnostics=diagnostics)
+    def work_then_check(cell: Cell, label: Label) -> Label:
+        if task_duration_s <= 0.0:
+            return label
+        work = evaluator.stationary(cell, label, task_duration_s, task)
+        return evaluator.advance(label, cell, work, "task")
+
+    return explore_reachability(evaluator, checker, start, cfg.routing.isochrones_s,
+                                after_arrival=work_then_check)
