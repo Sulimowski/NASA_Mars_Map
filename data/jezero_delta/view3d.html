@@ -124,6 +124,10 @@ svg.hours{display:block;width:100%;height:64px;margin-top:8px;overflow:visible}
 p.facts{margin:4px 0 0}
 #stops{margin-top:4px}
 #edit .row{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+.trip{display:flex;align-items:center;gap:9px;margin:7px 0 2px}
+.trip button{font:inherit;color:#fff;background:var(--sel);border:1px solid var(--sel);padding:4px 11px;cursor:pointer;white-space:nowrap}
+.trip button:hover{filter:brightness(1.12)}
+.trip span{color:var(--dim)}
 #edit button{font:inherit;color:var(--text);background:#30353c;border:1px solid #4a5058;padding:4px 9px;cursor:pointer}
 #edit button:hover{background:var(--hover)}
 #edit button.on{background:var(--sel);border-color:var(--sel);color:#fff}
@@ -712,7 +716,7 @@ function listStops() {
   document.querySelectorAll('.stop .e').forEach(e => e.onclick = ev => { ev.stopPropagation(); renameStop(+e.dataset.e); });
   document.querySelectorAll('.stop span').forEach(e => e.ondblclick = ev => { const i = +e.parentNode.dataset.i; if (i) { ev.stopPropagation(); renameStop(i); } });
   document.querySelectorAll('.stop').forEach(e => e.onclick = () => select(+e.dataset.i, true));
-  document.querySelectorAll('.stop .x').forEach(e => e.onclick = ev => { ev.stopPropagation(); custom = true; stops.splice(+e.dataset.x, 1); renumber(); stopsChanged(); });
+  document.querySelectorAll('.stop .x').forEach(e => e.onclick = ev => { ev.stopPropagation(); custom = true; stops.splice(+e.dataset.x, 1); renumber(); editMsg = ''; stopsChanged(); });
 }
 function select(i, fly) {
   selected = i; const s = stops[i];
@@ -738,13 +742,41 @@ function showPlan() {
   const rows = PLANS.length > 1 ? `<table class="plans"><tr><th>Plan</th><th>Time</th><th>O₂ left</th><th>Dose</th></tr>${PLANS.map(p =>
     `<tr class="row${p === PLAN ? ' on' : ''}" data-p="${p.id}"><td><i class="${planOk(p) ? '' : 'bad'}"></i>${PLAN_NAMES[p.id] || p.title}</td>
      <td>${fmt(p.summary.total_time_hours, 1)} h</td><td>${fmt(p.summary.o2_remaining_pct, 0)} %</td><td>${fmt(p.summary.total_dose_msv, 3)}</td></tr>`).join('')}</table>` : '';
-  // one line of numbers for the chosen route, its status, and the planner's warnings
+  // one line of numbers for the chosen route, its status, the trip control (reqvi: the
+  // astronaut walks the route once and waits at the base), and the planner's warnings
   const when = P ? `sol ${P.sol} · ${fmt(P.ltst, 0)} h${P.particleEvent ? ' · solar particle event' : ''}` : '';
   $('plan').innerHTML = `${rows}<p class="status ${planOk(PLAN) ? '' : 'bad'}" title="Limits: ${m.evaHours} h, ${m.maxKm} km, ${m.maxDose} mSv"><i></i>${planOk(PLAN) ? 'Within limits' : 'Exceeds limits'}</p>
     <p class="facts">${fmt(s.total_distance_km, 2)} km · +${fmt(s.total_elevation_gain_m, 0)} m · battery ${fmt(s.battery_remaining_pct, 0)} %${when ? ' · ' + when : ''}</p>
+    <div class="trip"><button id="tripBtn" type="button"></button><span id="tripState"></span></div>
     ${PLAN.warnings.map(w => `<p class="warn">${w}</p>`).join('')}`;
   document.querySelectorAll('#plan tr.row').forEach(r => r.onclick = () => {
-    PLAN = PLANS.find(p => p.id === r.dataset.p); layout(); showPlan(); t0 = performance.now(); });
+    PLAN = PLANS.find(p => p.id === r.dataset.p); layout(); showPlan(); startTrip(); });
+  $('tripBtn').onclick = tripClick; walk.shown = ''; drawTrip();
+}
+// ---------- the trip: once along the route, then wait ----------
+// The astronaut goes the chosen route once, from the base through the stops and back, and
+// stops there. Nothing moves again until a route is chosen (the same one counts) or
+// "Go again" is pressed. "Pause" holds the trip where it is.
+function startTrip() {
+  if (!PLAN) return;
+  const detour = walk.detour;
+  Object.assign(walk, {u: 0, done: false, paused: false, hold: false, detour: null, names: null});
+  if (detour) { layout(); if (routeCurve) walk.base = routeCurve.getLength(); }   // back to the planned route
+  clearZone(); drawTrip();
+}
+function tripClick() {
+  if (walk.done) return startTrip();
+  walk.paused = !walk.paused; drawTrip();
+}
+function drawTrip() {
+  const b = $('tripBtn'); if (!b) return;
+  const pct = Math.round(Math.min(walk.u, 1) * 100);
+  const key = walk.done ? 'done' : (walk.paused ? 'p' : walk.hold ? 'h' : 'm') + pct;
+  if (key === walk.shown) return;                  // called every frame: touch the page only on change
+  walk.shown = key;
+  b.textContent = walk.done ? 'Go again' : walk.paused ? 'Resume' : 'Pause';
+  $('tripState').textContent = walk.done ? 'Back at base'
+    : walk.paused ? `Paused · ${pct} %` : walk.hold ? `Waiting · ${pct} %` : `Walking · ${pct} %`;
 }
 // ---------- plan your own walk: place a base and points, ask the planner for the routes ----------
 // Needs the app server (scripts/serve.py): it runs the Python planner. Opened any other way
@@ -1347,24 +1379,23 @@ function stepWalk(now) {
   const dt = walk.last ? Math.min(now - walk.last, 100) : 0; walk.last = now;
   if (!routeCurve || !walker.visible) return;
   if (walk.plan !== PLAN) {                        // another plan was chosen or planned: start it from the base
-    Object.assign(walk, {plan: PLAN, u: 0, detour: null, names: null, hold: false});
+    Object.assign(walk, {plan: PLAN, u: 0, detour: null, names: null, hold: false, done: false, paused: false});
     walk.base = routeCurve.getLength(); clearZone();
   }
   if (walk.zone && now > walk.zoneUntil) clearZone();
-  const watching = DV && devilPoints.visible && toggles.avoid && toggles.avoid[1];
+  const moving = !walk.done && !walk.paused;
+  const watching = moving && DV && devilPoints.visible && toggles.avoid && toggles.avoid[1];
   if (!watching) { if (walk.hold && !walk.pending) walk.hold = false; }
   else if (!walk.pending) {
     const z = threat();
     if (walk.hold) { if (!z) { walk.hold = false; say('The dust devil has passed. Walking on.'); } }
     else if (z && now > walk.cool) avoidDevil(z, now);
   }
-  if (!walk.hold) {
+  if (!walk.hold && moving) {
     walk.u += dt / (42000 * routeCurve.getLength() / walk.base);       // the same pace on any route
-    if (walk.u >= 1) {                             // back at the base: the next walk follows the plan again
-      walk.u = 0;
-      if (walk.detour) { walk.detour = null; walk.names = null; layout(); walk.base = routeCurve.getLength(); }
-    }
+    if (walk.u >= 1) { walk.u = 1; walk.done = true; }                 // arrived: stay until told to go again
   }
+  drawTrip();
   walker.position.copy(routeCurve.getPointAt(Math.min(walk.u, 1))).y += 7;
 }
 window.__walk = walk;
