@@ -127,10 +127,39 @@ svg.hours{display:block;width:100%;height:64px;margin-top:8px;overflow:visible}
 .stop .x,.stop .e{cursor:pointer;color:var(--dim);padding:0 3px} .stop .x:hover{color:var(--bad)} .stop .e:hover{color:var(--link)}
 .stop input{font:inherit;color:var(--text);background:#1c1f23;border:1px solid var(--sel);padding:0 4px;width:100%;min-width:0;box-sizing:border-box}
 canvas.placing{cursor:crosshair}
-svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
+svg.spark{display:block;width:100%;height:34px;margin-top:1px;overflow:visible}
 .spark text{font:11px var(--ui);fill:var(--dim)}
 .series{margin:8px 0 0}
 .series span{color:var(--dim)}
+
+/* ---- left panel: site line, the sky-to-rock column, time ---- */
+.site{padding:9px 12px 10px}
+.site b{display:block;font-size:13px;font-weight:600;text-transform:capitalize;margin-bottom:2px}
+.site span{color:var(--dim)}
+#column{position:relative;margin:2px 12px 0 12px;padding:0 0 0 22px;outline:none;cursor:pointer;user-select:none;touch-action:none}
+#column:focus-visible{outline:2px solid var(--link);outline-offset:2px}
+#column::before{content:"";position:absolute;left:6px;top:4px;bottom:4px;width:5px;border:1px solid #000;
+  background:linear-gradient(#05070b 0%,#3b4250 14%,#a0705a 34%,#c28a5f 46%,#d7a273 50%,#8a5a3e 56%,#5a3b2a 74%,#2e211b 100%)}
+.lv{position:relative;display:grid;grid-template-columns:1fr auto;gap:8px;padding:2px 0 2px 6px;color:var(--dim)}
+.lv:hover{color:var(--text)}
+.lv small{font-size:11px;color:#6d747c}
+.lv.on{color:#fff;font-weight:600}
+#column .handle{position:absolute;left:2px;top:0;width:13px;height:13px;margin-top:-7px;border:2px solid #fff;border-radius:50%;background:var(--sel);box-sizing:border-box;pointer-events:none;transition:top .32s cubic-bezier(.3,.7,.2,1)}
+#column.dragging .handle{transition:none}
+.lv{transition:color .25s}
+.plan-pick{display:flex;flex-wrap:wrap;gap:3px 14px;margin:6px 12px 0}
+.plan-pick label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.plan-pick input{margin:0;accent-color:var(--link)}
+.lv.ground{margin-top:3px;padding-top:4px;border-top:1px solid #8a7a6a}
+.lv.ground+.lv{margin-top:3px;border-top:1px solid #8a7a6a;padding-top:4px}
+.lv.nodata{font-style:italic}
+#levelBox{margin:9px 12px 0}
+#levelText{margin:0 0 6px;color:var(--text)}
+#levelText em{font-style:normal;color:var(--dim)}
+#allLayers summary{padding:7px 12px;color:var(--dim);cursor:pointer;list-style-position:inside}
+#allLayers summary:hover{color:var(--text)}
+#allLayers[open] summary{color:var(--text)}
+body.space #gl{background:radial-gradient(120% 75% at 50% 18%,#151a24 0%,#0b0e14 45%,#06070a 100%)}
 
 .compass{position:fixed;right:calc(var(--rw) + 12px);top:calc(var(--bar) + 12px);width:44px;height:44px}
 .compass svg{width:100%;height:100%}
@@ -151,16 +180,26 @@ svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
 </header>
 
 <aside class="panel left">
-  <section><h2>Site</h2><table id="facts"></table></section>
-  <section><h2>Layers</h2><div id="layers"></div></section>
-  <section class="legend"><h2>Legend</h2><div id="legend"></div></section>
-  <section><h2>View</h2>
-    <div class="ctl"><label for="op">Overlay</label><input id="op" type="range" min="0" max="1" step="0.01" value="0.85"><output id="opv"></output></div>
-    <div class="ctl"><label for="ex">Relief scale</label><input id="ex" type="range" min="0.5" max="3" step="0.05" value="1"><output id="exv"></output></div>
-    <div class="ctl"><label for="az">Sun bearing</label><input id="az" type="range" min="0" max="360" step="1" value="300"><output id="azv"></output></div>
-    <div class="ctl"><label for="al">Sun height</label><input id="al" type="range" min="4" max="85" step="1" value="34"><output id="alv"></output></div>
-    <div class="toggles" id="toggles"></div>
+  <section class="site"><div id="facts"></div></section>
+  <section><h2>Levels</h2>
+    <div id="column" tabindex="0" title="Click or drag a level. Arrow keys move it, double-click returns to the surface."></div>
+    <div class="legend" id="levelBox"><p id="levelText"></p><div id="legend"></div></div>
   </section>
+  <section><h2>Time</h2>
+    <div class="ctl wide"><label for="dvs">Season</label><select id="dvs"></select></div>
+    <div class="ctl"><label for="dvh">Local time</label><input id="dvh" type="range" min="0" max="23.95" step="0.05"><output id="dvhv"></output></div>
+    <div class="ctl"><label></label><button id="dvp" type="button">Play</button><span></span></div>
+    <p class="note" id="sunText"></p>
+  </section>
+  <section><h2>On the map</h2>
+    <div class="toggles" id="toggles"></div>
+    <p class="note" style="margin:10px 12px 0">Planning overlay</p>
+    <div class="plan-pick" id="planPick"></div>
+    <div id="planLegend" class="legend" style="margin:4px 12px 0"></div>
+    <div class="ctl" style="margin-top:9px"><label for="ex">Relief scale</label><input id="ex" type="range" min="0.5" max="3" step="0.05" value="1"><output id="exv"></output></div>
+    <div class="ctl"><label for="op">Overlay</label><input id="op" type="range" min="0" max="1" step="0.01" value="0.85"><output id="opv"></output></div>
+  </section>
+  <section><details id="allLayers"><summary>All layers</summary><div id="layers"></div></details></section>
 </aside>
 
 <aside class="panel right">
@@ -169,14 +208,10 @@ svg.spark{display:block;width:100%;height:56px;margin-top:2px;overflow:visible}
   <section><h2>Plan your own walk</h2><div id="edit"></div></section>
   <section id="planBox" style="display:none"><h2>EVA plan</h2><div id="plan"></div></section>
   <section id="devilBox" style="display:none"><h2>Dust devils</h2>
-    <div class="ctl wide"><label for="dvs">Season</label><select id="dvs"></select></div>
-    <div class="ctl"><label for="dvh">Local time</label><input id="dvh" type="range" min="0" max="23.95" step="0.05"><output id="dvhv"></output></div>
-    <div class="ctl"><label></label><button id="dvp" type="button">Pause</button><span></span></div>
     <div id="devils"></div>
     <div class="ctl"><label></label><button id="dvt" type="button" title="Sends one vortex across the route ahead of the astronaut">Send one across the route</button><span></span></div>
     <p class="note" id="dvlog" style="margin:6px 12px 0"></p>
   </section>
-  <section id="condBox" style="display:none"><h2>Conditions by sol</h2><div id="cond"></div></section>
 </aside>
 
 <div class="compass" title="North"><svg viewBox="-30 -30 60 60">
@@ -251,13 +286,13 @@ const SAND = D.sand;
 const sandDir = SAND ? [Math.cos(SAND.wind), Math.sin(SAND.wind)] : [1, 0];   // wind axis, across the ripple crests
 
 const uniforms = {
-  uBase: {value: blank}, uLayer: {value: blank}, uMask: {value: blank}, uSand: {value: blank}, uHeight: {value: heightTex},
+  uBase: {value: blank}, uLayer: {value: blank}, uLayerPrev: {value: blank}, uLayerMix: {value: 1}, uPlan: {value: blank}, uPlanOn: {value: 0}, uMask: {value: blank}, uSand: {value: blank}, uHeight: {value: heightTex},
   uOpacity: {value: .85}, uExag: {value: 1}, uSun: {value: new THREE.Vector3(0, 1, 0)},
   uContour: {value: 1}, uHatch: {value: 0}, uShade: {value: .45}, uShadows: {value: 1}, uSandOn: {value: SAND ? 1 : 0},
   uSize: {value: new THREE.Vector2(W, H)}, uGrid: {value: new THREE.Vector2(cols, rows)},
   uNormal: {value: blank}, uHasNormal: {value: 0}, uTexel: {value: new THREE.Vector2(1000, 1000)},
   uTime: {value: 0}, uWind: {value: new THREE.Vector2(sandDir[0], sandDir[1])},
-  uHaze: {value: new THREE.Color(0x1d1917)},
+  uHaze: {value: new THREE.Color(0x1d1917)}, uDay: {value: 1}, uFog: {value: 0},
 };
 const terrainMat = new THREE.ShaderMaterial({
   uniforms, side: THREE.DoubleSide,
@@ -267,8 +302,8 @@ const terrainMat = new THREE.ShaderMaterial({
       vN = normalize(vec3(normal.x * uExag, normal.y, normal.z * uExag)); vW = p;
       vec4 mv = modelViewMatrix * vec4(p, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }`,
   fragmentShader: `
-    uniform sampler2D uBase, uLayer, uMask, uSand, uHeight, uNormal;
-    uniform float uOpacity, uContour, uHatch, uShade, uShadows, uSandOn, uExag, uTime, uHasNormal;
+    uniform sampler2D uBase, uLayer, uLayerPrev, uPlan, uMask, uSand, uHeight, uNormal; uniform float uLayerMix, uPlanOn;
+    uniform float uOpacity, uContour, uHatch, uShade, uShadows, uSandOn, uExag, uTime, uHasNormal, uDay, uFog;
     uniform vec3 uSun, uHaze; uniform vec2 uSize, uGrid, uWind, uTexel;
     varying vec2 vUv; varying vec3 vN; varying vec3 vW; varying float vElev; varying float vDist;
     float line(float e, float step_){ float f = e / step_; float w = fwidth(f) * 1.15; return 1.0 - smoothstep(0.0, w, abs(fract(f - 0.5) - 0.5)); }
@@ -298,7 +333,8 @@ const terrainMat = new THREE.ShaderMaterial({
       return clamp(1.0 - o * 0.32, 0.45, 1.0);
     }
     void main(){
-      vec3 base = texture2D(uBase, vUv).rgb; vec4 lay = texture2D(uLayer, vUv);
+      vec3 base = texture2D(uBase, vUv).rgb;
+      vec4 lay = mix(texture2D(uLayerPrev, vUv), texture2D(uLayer, vUv), uLayerMix);   // cross-fade when the layer changes
       // sharpen the photo a little (unsharp mask over the four neighbours)
       vec2 px = 1.0 / uTexel;
       vec3 blur = 0.25 * (texture2D(uBase, vUv + vec2(px.x, 0.0)).rgb + texture2D(uBase, vUv - vec2(px.x, 0.0)).rgb
@@ -343,11 +379,16 @@ const terrainMat = new THREE.ShaderMaterial({
       }
 
       float k = uOpacity * lay.a; vec3 c = mix(base, lay.rgb, k);
+      vec4 pl = texture2D(uPlan, vUv); float kp = 0.8 * pl.a * uPlanOn;   // planning overlay, on top of any level
+      c = mix(c, pl.rgb, kp); k = max(k, kp);
 
       // ---- light: warm Sun with soft cast shadows, cool sky fill, occlusion in hollows
       float sh = uShadows > 0.5 ? shadow(vW + n * 1.5) : 1.0;
       float ao = uShadows > 0.5 ? occlusion(vW) : 1.0;
       float ndl = max(dot(n, normalize(uSun)), 0.0);
+      // after sunset there is no direct Sun: no cast shadows, just soft light from a grey sky
+      sh = mix(1.0, sh, uDay);
+      ndl = mix(0.38 + 0.3 * n.y, ndl, uDay);
       vec3 sunC = vec3(1.08, 0.98, 0.86), skyC = vec3(0.50, 0.47, 0.50);
       vec3 lit = (skyC * (0.55 + 0.45 * n.y) * ao + sunC * ndl * mix(1.0, sh, 0.85) * 0.95);
       lit = lit * (1.0 + rip * sf) + gust * sf;
@@ -364,6 +405,9 @@ const terrainMat = new THREE.ShaderMaterial({
       c = mix(vec3(lum), c, 1.14);
       c = c * (1.0 + c * 0.22) / (1.0 + c * 0.30) * 1.08;
       c = pow(max(c, 0.0), vec3(0.97));
+      c *= mix(vec3(0.56, 0.58, 0.66), vec3(1.0), uDay);              // night: like an overcast evening, dim but readable
+      // atmosphere level: a dusty butterscotch haze that thickens with distance
+      c = mix(c, vec3(0.62, 0.45, 0.33) * (0.35 + 0.65 * uDay), uFog * (0.18 + 0.5 * smoothstep(300.0, 4200.0, vDist)));
       c = mix(c, uHaze, 0.42 * smoothstep(2200.0, 9000.0, vDist));
       gl_FragColor = vec4(c, 1.0);
     }`,
@@ -384,8 +428,12 @@ const terrainMat = new THREE.ShaderMaterial({
   g.setIndex(new THREE.BufferAttribute(idx, 1)); g.computeVertexNormals();
   const mesh = new THREE.Mesh(g, terrainMat); mesh.frustumCulled = false; scene.add(mesh);
 }
+// how deep the block is cut; the deeper levels of the sky-to-rock column dig it deeper
+const STRATA_DEPTH = Math.max(relief * .16, 40), strataDepth = {value: STRATA_DEPTH};
+// what the sky-to-rock column asks of the 3D view; animated towards in frame()
+const view = {below: false, fog: 0, devilBoost: 1, veilBoost: 1, depth: 1, air: 1, paths: false};     // air: 1 above ground, eases to 0 below
 { // the cut sides of the block, drawn as rock strata
-  const depth = Math.max(relief * .16, 40), P = [], T = [], I = [];
+  const P = [], T = [], I = [];
   const edge = [];
   for (let c = 0; c < cols; c++) edge.push([0, c]);
   for (let r = 1; r < rows; r++) edge.push([r, cols - 1]);
@@ -399,7 +447,7 @@ const terrainMat = new THREE.ShaderMaterial({
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('top', new THREE.Float32BufferAttribute(T, 1)); g.setIndex(I);
   scene.add(new THREE.Mesh(g, new THREE.ShaderMaterial({
-    uniforms: {uExag: uniforms.uExag, uDepth: {value: depth}}, side: THREE.DoubleSide,
+    uniforms: {uExag: uniforms.uExag, uDepth: strataDepth}, side: THREE.DoubleSide,
     vertexShader: `attribute float top; uniform float uExag, uDepth; varying float vE; varying float vY;
       void main(){ vec3 p = position; vE = top > .5 ? position.y : -uDepth / max(uExag, .01); p.y = top > .5 ? position.y * uExag : -uDepth; vY = p.y;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
@@ -539,6 +587,7 @@ function readout() {
   if (probes.reachable) rowsOut.push(['From base', val('reachable') ? 'reachable' : 'cut off']);
   if (probes.thermal_inertia) rowsOut.push(['Thermal inertia', fmt(val('thermal_inertia'), 0)]);
   if (probes.sand_fraction) rowsOut.push(['Loose sand', fmt(val('sand_fraction') * 100, 0) + ' %']);
+  if (probes.dose_rate) rowsOut.push(['Radiation', fmt(val('dose_rate'), 1) + ' µSv/h']);
   if (probes.mineral_dominant) rowsOut.push(['Mineral', (D.mineralNames[val('mineral_dominant')] || 'none').replace(/\s*\(.*\)/, '')]);
   if (probes.science_score) rowsOut.push(['Science score', fmt(val('science_score'), 2)]);
   t.innerHTML = rowsOut.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
@@ -557,11 +606,8 @@ const siteName = (D.name.startsWith('gale') ? 'Gale crater, ' : '') + D.name.rep
 $('title').textContent = siteName; document.title = siteName + ' · Mars Survival Map';
 const latLon = `${fmt(Math.abs(D.lat), 3)}° ${D.lat < 0 ? 'S' : 'N'}, ${fmt(D.lon, 3)}° E`;
 $('coords').textContent = `${latLon}  ·  ${fmt(W / 1000, 1)} × ${fmt(H / 1000, 1)} km, ${D.res} m per cell`;
-$('facts').innerHTML = [['Centre', latLon], ['Area', `${fmt(W / 1000, 1)} × ${fmt(H / 1000, 1)} km`], ['Cell size', D.res + ' m'],
-  ['Relief', fmt(D.stats.relief, 0) + ' m'], ['Median slope', fmt(D.stats.slopeMedian, 1) + '°'],
-  ['Blocked ground', fmt(D.stats.blocked * 100, 1) + ' %'],
-  ['Reachable from base', D.stats.reachable == null ? 'not computed' : fmt(D.stats.reachable * 100, 0) + ' %']]
-  .map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
+$('facts').innerHTML = `<b>${siteName}</b><span>${latLon} · ${fmt(W / 1000, 1)} km · relief ${fmt(D.stats.relief, 0)} m · ` +
+  `${D.stats.reachable == null ? fmt(D.stats.blocked * 100, 0) + ' % blocked' : fmt(D.stats.reachable * 100, 0) + ' % reachable'}</span>`;
 $('foot').textContent = D.source;
 
 const layers = [{id: 'photo', title: 'Photo only', group: 'Surface', kind: 'note', note: D.baseCaption}, ...D.layers];
@@ -570,16 +616,35 @@ let active = 'photo';
 async function setLayer(id) {
   active = id; const L = layers.find(l => l.id === id);
   document.querySelectorAll('.layer').forEach(e => { const on = e.dataset.id === id; e.classList.toggle('on', on); e.querySelector('input').checked = on; });
+  $('legend').innerHTML = legendHtml(L); $('legend').title = L.note || '';
+  const next = L.tex ? (texCache[id] ??= await texture(L.tex)) : blank;
+  if (active !== id || next === uniforms.uLayer.value) return;
+  // cross-fade: the old layer stays underneath and the new one fades in (see frame())
+  uniforms.uLayerPrev.value = uniforms.uLayerMix.value > .5 ? uniforms.uLayer.value : uniforms.uLayerPrev.value;
+  uniforms.uLayer.value = next; uniforms.uLayerMix.value = 0;
+}
+function legendHtml(L) {
   let h = '';
   if (L.kind === 'ramp') h = `<div class="bar" style="background:linear-gradient(90deg,${L.stops.join(',')})"></div><div class="ends"><span>${L.min}</span><em>${L.unit}</em><span>${L.max}</span></div>`;
   if (L.kind === 'classes') h = `<div class="chips">${L.classes.map(c => `<span><i style="background:${c.color}"></i>${c.name.replace(/\s*\(.*\)/, '')}</span>`).join('')}</div>`;
-  $('legend').innerHTML = h + (L.note ? `<p class="note">${L.note}</p>` : '');
-  if (!L.tex) { uniforms.uLayer.value = blank; return; }
-  texCache[id] ??= await texture(L.tex);
-  if (active === id) uniforms.uLayer.value = texCache[id];
+  return h;
 }
+// Planning layers (walking cost, reachable from base) are not a height or a depth: they sit
+// on top of whatever level of the column is shown.
+const PLAN_LAYERS = ['cost', 'reachable'].map(id => layers.find(l => l.id === id)).filter(Boolean);
+async function setPlanLayer(id) {
+  const L = PLAN_LAYERS.find(l => l.id === id);
+  $('planLegend').innerHTML = L ? legendHtml(L) : ''; $('planLegend').title = L ? L.note || '' : '';
+  if (!L) { uniforms.uPlanOn.value = 0; return; }
+  uniforms.uPlan.value = texCache[id] ??= await texture(L.tex); uniforms.uPlanOn.value = 1;
+}
+$('planPick').innerHTML = [['', 'None'], ...PLAN_LAYERS.map(l => [l.id, l.title])]
+  .map(([id, t]) => `<label><input type="radio" name="planl" value="${id}"${id ? '' : ' checked'}>${t}</label>`).join('');
+document.querySelectorAll('#planPick input').forEach(b => b.onchange = () => setPlanLayer(b.value));
 { let g = '', h = '';
-  for (const L of layers) {
+  const ORDER = ['Surface', 'Environment', 'Terrain', 'Routing', 'Science', 'Data'];     // each group once, in this order
+  const rank = L => { const k = ORDER.indexOf(L.group); return k < 0 ? ORDER.length : k; };
+  for (const L of layers.map((l, i) => [l, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0])) {
     if (L.group !== g) { g = L.group; h += `<div class="group">${g}</div>`; }
     const sw = L.kind === 'ramp' ? `linear-gradient(90deg,${L.stops.join(',')})` : L.kind === 'classes' ? `linear-gradient(90deg,${L.classes.map((c, i, a) => `${c.color} ${i / a.length * 100}% ${(i + 1) / a.length * 100}%`).join(',')})` : '';
     h += `<label class="layer" data-id="${L.id}"><input type="radio" name="layer"><i style="background:${sw}"></i><span>${L.title}</span></label>`;
@@ -588,32 +653,45 @@ async function setLayer(id) {
   document.querySelectorAll('.layer').forEach(e => e.querySelector('input').onchange = () => setLayer(e.dataset.id));
 }
 
-const toggles = {contours: ['Contours 10 m', true], hatch: ['Blocked ground', false], labels: ['Labels', true]};
+const toggles = {contours: ['Contours', true], hatch: ['Blocked', false], labels: ['Labels', true]};
 if (D.track.length) toggles.track = ['Rover track', true];
 if (PLANS.length) toggles.route = ['EVA route', true];
-if (D.devils) { toggles.devils = ['Dust devils', true]; toggles.avoid = ['Avoid dust devils', true]; }
-if (SAND) toggles.sand = ['Sand and blowing sand', true];
+if (D.devils) { toggles.devils = ['Dust devils', true]; toggles.avoid = ['Avoid devils', true]; }
+if (SAND) toggles.sand = ['Blowing sand', true];
 toggles.shadows = ['Shadows', true];
 function applyToggles() {
   uniforms.uContour.value = toggles.contours[1] ? 1 : 0; uniforms.uHatch.value = toggles.hatch[1] ? 1 : 0;
   uniforms.uShadows.value = toggles.shadows[1] ? 1 : 0;
   uniforms.uSandOn.value = toggles.sand && toggles.sand[1] ? 1 : 0;
-  if (sandPoints) sandPoints.visible = !!(toggles.sand && toggles.sand[1]);
+  // below the surface, whatever is in the air (vortices, blowing sand) is left out
+  if (sandPoints) sandPoints.visible = !!(toggles.sand && toggles.sand[1]) && view.air > .01;
   $('labels').style.display = toggles.labels[1] ? '' : 'none';
   if (trackMesh) trackMesh.visible = !!(toggles.track && toggles.track[1]);
   if (routeMesh) routeMesh.visible = !!(toggles.route && toggles.route[1]);
   walker.visible = !!(routeMesh && routeMesh.visible);
-  if (devilPoints) devilPoints.visible = !!(toggles.devils && toggles.devils[1]);
+  if (devilPoints) devilPoints.visible = !!(toggles.devils && toggles.devils[1]) && view.air > .01;
 }
 $('toggles').innerHTML = Object.entries(toggles).map(([k, [t, on]]) => `<label><input type="checkbox" data-k="${k}"${on ? ' checked' : ''}>${t}</label>`).join('');
 document.querySelectorAll('#toggles input').forEach(b => b.onchange = () => { toggles[b.dataset.k][1] = b.checked; applyToggles(); });
 
-function sun() {
-  const a = $('az').value * Math.PI / 180, e = $('al').value * Math.PI / 180;
-  uniforms.uSun.value.set(Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e));
-  $('azv').textContent = $('az').value + '°'; $('alv').textContent = $('al').value + '°';
+// The Sun follows the clock and the season of the Time section: solar declination from
+// Ls (Mars' obliquity 25.19°), hour angle 15° per Mars hour of local solar time.
+function sunAt(hour, ls) {
+  const r = Math.PI / 180, lat = D.lat * r, dec = Math.asin(Math.sin(25.19 * r) * Math.sin(ls * r)), h = (hour - 12) * 15 * r;
+  const alt = Math.asin(Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(h));
+  const az = Math.atan2(-Math.sin(h), Math.tan(dec) * Math.cos(lat) - Math.sin(lat) * Math.cos(h));   // from north, clockwise
+  return {alt, az: (az + 2 * Math.PI) % (2 * Math.PI)};
 }
-$('az').oninput = $('al').oninput = sun;
+let sunKey = '';
+function sun() {
+  const hour = DV ? dv.hour : 11.5, ls = DV ? DV.seasons[dv.season] + 15 : (D.plans && D.plans.ls) || 90;
+  const key = hour.toFixed(2) + '|' + ls; if (key === sunKey) return; sunKey = key;
+  const {alt, az} = sunAt(hour, ls), e = Math.max(alt, -0.12);
+  uniforms.uSun.value.set(Math.sin(az) * Math.cos(e), Math.sin(e), -Math.cos(az) * Math.cos(e));
+  uniforms.uDay.value = Math.min(1, Math.max(0, (alt * 180 / Math.PI + 4) / 14));      // dusk over the last few degrees
+  const deg = Math.round(alt * 180 / Math.PI);
+  $('sunText').textContent = alt > 0 ? `Sun ${deg}° ${['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(az / (Math.PI / 4)) % 8]}` : 'Night';
+}
 $('op').oninput = () => { uniforms.uOpacity.value = +$('op').value; $('opv').textContent = Math.round($('op').value * 100) + '%'; };
 $('ex').oninput = () => { exag = +$('ex').value; uniforms.uExag.value = exag; $('exv').textContent = exag.toFixed(2); ring.visible = false; layout(); };
 
@@ -758,7 +836,7 @@ showPlan();
 // three times wider than real so they can be seen at this scale.
 const DV = D.devils;
 const DV_NP = 4400, DV_SHADOW = 36, DV_MAX = 14, SOL_H = 1.0275;     // particles per vortex, vortices at once, Earth h per Mars h
-const dv = {season: 0, hour: 11.5, play: true, last: 0, shown: ''};
+const dv = {season: 0, hour: 11.5, play: false, last: 0, shown: ''};
 const devils = [];
 let devilGeo = null;
 if (DV) {
@@ -791,12 +869,12 @@ if (DV) {
   devilGeo.setDrawRange(0, 0);
   // Soft round particles with their own colour, size (metres) and transparency.
   devilPoints = new THREE.Points(devilGeo, new THREE.ShaderMaterial({
-    uniforms: {uScale: {value: 600}},
+    uniforms: {uScale: {value: 600}, uFade: {value: 1}},
     vertexShader: `attribute float alpha, psize; attribute vec3 tint; varying float vA, vSeed; varying vec3 vC; uniform float uScale;
       void main() { vA = alpha; vC = tint; vSeed = fract(sin(float(gl_VertexID) * 12.9898) * 43758.5453);
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_PointSize = clamp(psize * uScale / -mv.z, 2.5, 46.0); gl_Position = projectionMatrix * mv; }`,
-    fragmentShader: `varying float vA, vSeed; varying vec3 vC;
+    fragmentShader: `varying float vA, vSeed; varying vec3 vC; uniform float uFade;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
         return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
@@ -807,7 +885,7 @@ if (DV) {
         float a = pow(1.0 - r * 2.0, 1.35);
         // lit from above, darker underneath: gives each puff some volume
         vec3 c = vC * (0.86 + 0.26 * (0.5 - gl_PointCoord.y) + 0.10 * (n - 0.5));
-        gl_FragColor = vec4(c, min(1.0, vA * a * 1.25)); }`,
+        gl_FragColor = vec4(c, min(1.0, vA * a * 1.25) * uFade); }`,
     transparent: true, depthWrite: false}));
   devilPoints.frustumCulled = false; devilPoints.renderOrder = 4; scene.add(devilPoints);
   dv.scale = 1.1 / peak;                              // spawns per second of animation at the peak hour of the year
@@ -843,10 +921,75 @@ function drawDevilPanel() {
     <p class="note">Vortices with a pressure drop of 0.8 Pa or more passing over one point. ${DV.source}. The vortices on the map follow this rate for the chosen season and hour; their places and paths are random and they are drawn wider than real.</p>`;
 }
 drawDevilPanel();
-window.__devils = {state: dv, list: devils, spawn: () => spawnDevil(), across: () => devilAcrossRoute()};    // for debugging, like window.__viewer
+window.__devils = {state: dv, list: devils, spawn: () => spawnDevil(), across: () => devilAcrossRoute(), paths: () => ({mesh: pathMesh, fade: pathFade, view})};    // for debugging, like window.__viewer
+{ // view3d.html#hour=21.5 opens at that local time
+  const m = location.hash.match(/hour=([\d.]+)/);
+  if (m && DV) { dv.hour = Math.min(23.95, +m[1]); dv.shown = ''; drawDevilPanel(); }
+}
 { // view3d.html#devils=3 starts with that many vortices already turning (for screenshots and demos)
   const m = location.hash.match(/devils=(\d+)/);
   if (m && DV) for (let i = 0; i < Math.min(+m[1], DV_MAX); i++) { spawnDevil(); devils[devils.length - 1].age = 2 + Math.random() * 2; }
+}
+
+// ---------- where each vortex is heading: a ribbon on the ground, at the Dust devils level ----------
+// The track of a vortex over the rest of its life (it drifts in a straight line with the
+// wind), laid on the relief. Dashes run along it in the direction of travel and it fades
+// towards the end, where the vortex will die out.
+const PATH_SEG = 28, PATH_W = 9;
+let pathGeo = null, pathMesh = null, pathFade = 0;
+if (DV) {
+  const nv = DV_MAX * PATH_SEG * 6;
+  pathGeo = new THREE.BufferGeometry();
+  pathGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nv * 3), 3));
+  pathGeo.setAttribute('along', new THREE.BufferAttribute(new Float32Array(nv), 1));
+  pathGeo.setAttribute('fade', new THREE.BufferAttribute(new Float32Array(nv), 1));
+  pathGeo.setAttribute('side', new THREE.BufferAttribute(new Float32Array(nv), 1));
+  pathMesh = new THREE.Mesh(pathGeo, new THREE.ShaderMaterial({
+    uniforms: {uTime: uniforms.uTime, uFade: {value: 0}},
+    vertexShader: `attribute float along, fade, side; varying float vAlong, vFade, vSide;
+      void main(){ vAlong = along; vFade = fade; vSide = side; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform float uTime, uFade; varying float vAlong, vFade, vSide;
+      void main(){
+        float dash = fract((vAlong - uTime * 26.0) / 40.0);
+        float on = smoothstep(0.0, 0.08, dash) * (1.0 - smoothstep(0.55, 0.63, dash));
+        float edge = 1.0 - smoothstep(0.55, 1.0, abs(vSide));            // soft edges across the ribbon
+        // a dark track with bright dashes reads on both the pale and the dark ground
+        float a = mix(0.55, 0.95, on) * edge * vFade * uFade;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(mix(vec3(0.30, 0.07, 0.04), vec3(1.0, 0.86, 0.55), on), a);
+      }`,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6}));    // stays on top of the ground it lies on
+  pathMesh.frustumCulled = false; pathMesh.renderOrder = 4; pathMesh.visible = false; scene.add(pathMesh);
+}
+function drawDevilPaths(dt) {
+  if (!pathMesh) return;
+  pathFade += ((view.paths && devilPoints.visible ? 1 : 0) - pathFade) * Math.min(1, dt * 5);
+  pathMesh.visible = pathFade > .01;
+  if (!pathMesh.visible) return;
+  pathMesh.material.uniforms.uFade.value = pathFade;
+  const P = pathGeo.attributes.position.array, AL = pathGeo.attributes.along.array, F = pathGeo.attributes.fade.array, S = pathGeo.attributes.side.array;
+  let n = 0;
+  for (const d of devils) {
+    const rem = Math.max(0, d.life - d.age), sp = Math.hypot(d.vx, d.vy) || 1, ux = d.vx / sp, uy = d.vy / sp;
+    // wide enough to read from where the camera is: ~10 m close up, wider from afar
+    const w = Math.max(PATH_W, cam.r * .011), len = sp * rem, nx = -uy * w / 2, ny = ux * w / 2;
+    const env = Math.min(1, d.age / 1.5, rem / 2);
+    for (let k = 0; k < PATH_SEG; k++) {
+      const q0 = k / PATH_SEG, q1 = (k + 1) / PATH_SEG;
+      const x0 = d.x + ux * len * q0, y0 = d.y + uy * len * q0, x1 = d.x + ux * len * q1, y1 = d.y + uy * len * q1;
+      if (x1 < 4 || y1 < 4 || x1 > W - 4 || y1 > H - 4) break;          // stops at the edge of the map
+      const quad = [[x0 + nx, y0 + ny, -1, q0], [x0 - nx, y0 - ny, 1, q0], [x1 + nx, y1 + ny, -1, q1],
+                    [x1 + nx, y1 + ny, -1, q1], [x0 - nx, y0 - ny, 1, q0], [x1 - nx, y1 - ny, 1, q1]];
+      for (const [x, y, s, q] of quad) {
+        const p = world(Math.max(1, Math.min(W - 1, x)), Math.max(1, Math.min(H - 1, y)), 5);
+        P[n * 3] = p.x; P[n * 3 + 1] = p.y; P[n * 3 + 2] = p.z;
+        AL[n] = len * q; F[n] = env * (1 - q) ** 0.8; S[n] = s; n++;
+      }
+    }
+  }
+  pathGeo.setDrawRange(0, n);
+  for (const k of ['position', 'along', 'fade', 'side']) pathGeo.attributes[k].needsUpdate = true;
 }
 
 function spawnDevil() {
@@ -860,12 +1003,13 @@ function updateDevils(now) {
   const dt = dv.last ? Math.min((now - dv.last) / 1000, .1) : 0; dv.last = now;
   if (dv.play) { dv.hour = (dv.hour + dt * .4) % 24; drawDevilPanel(); }     // one sol in a minute
   const on = devilPoints.visible;
-  if (on && devils.length < DV_MAX && Math.random() < devilRate(dv.hour) * dv.scale * dt) spawnDevil();
+  if (on && devils.length < DV_MAX && Math.random() < devilRate(dv.hour) * dv.scale * view.devilBoost * dt) spawnDevil();
   for (const d of devils) { d.age += dt; d.x += d.vx * dt; d.y += d.vy * dt; }
   for (let i = devils.length - 1; i >= 0; i--) {
     const d = devils[i];
     if (d.age > d.life || d.x < 20 || d.y < 20 || d.x > W - 20 || d.y > H - 20) devils.splice(i, 1);
   }
+  drawDevilPaths(dt);
   if (!on) return;
   devilPoints.material.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(camera.fov * Math.PI / 360));
   const A = devilGeo.attributes, pos = A.position.array, alp = A.alpha.array, siz = A.psize.array, col = A.tint.array;
@@ -976,6 +1120,7 @@ if (SAND) {
           gl_FragColor = vec4(col, min(alpha, 0.85));
         }`,
       transparent: true, depthWrite: false, side: THREE.DoubleSide}));
+    m.userData.strength = strength;
     m.frustumCulled = false; m.renderOrder = 3; sandPoints.add(m); veils.push(m);
   }
 }
@@ -984,25 +1129,97 @@ function updateSand(now) {
   const dt = sp.last ? Math.min((now - sp.last) / 1000, .1) : 0; sp.last = now; sp.t += dt;
   uniforms.uTime.value = sp.t;
   const g = gustAt(sp.t);
-  for (const m of veils) m.material.uniforms.uGust.value = g;
+  for (const m of veils) { m.material.uniforms.uGust.value = g; m.material.uniforms.uStrength.value = m.userData.strength * view.veilBoost * view.air; }
 }
 
+const SERIES = {space: '', air: '', near: ''};
 { const S = D.series, sol = S.sol || [];
   const spark = (title, lines, unit) => {
     const all = lines.flatMap(l => l.v), lo = Math.min(...all), hi = Math.max(...all), n = lines[0].v.length;
     const X = i => 4 + i / Math.max(n - 1, 1) * 252, Y = v => 46 - (v - lo) / Math.max(hi - lo, 1e-9) * 36;
     return `<p class="series">${title} <span>${fmt(lo, lo < 10 && lo > -10 ? 2 : 0)} to ${fmt(hi, hi < 10 && hi > -10 ? 2 : 0)} ${unit}</span></p>
-      <svg class="spark" viewBox="0 0 260 58" preserveAspectRatio="none"><line x1="4" x2="256" y1="46" y2="46" stroke="#4a5058" stroke-width="1" vector-effect="non-scaling-stroke"/>
+      <svg class="spark" viewBox="0 0 260 50" preserveAspectRatio="none" title="sol ${sol[0] ?? 0} to ${sol[sol.length - 1] ?? n - 1}"><line x1="4" x2="256" y1="46" y2="46" stroke="#4a5058" stroke-width="1" vector-effect="non-scaling-stroke"/>
       ${lines.map(l => `<polyline fill="none" stroke="${l.c}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${l.v.map((v, i) => X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ')}"/>`).join('')}
-      <text x="4" y="56">sol ${sol[0] ?? 0}</text><text x="256" y="56" text-anchor="end">sol ${sol[sol.length - 1] ?? n - 1}</text></svg>`;
+      </svg>`;
   };
-  let h = '';
-  if (S.radiation_msv_per_sol) h += spark('Radiation', [{v: S.radiation_msv_per_sol, c: '#e8804a'}], 'mSv per sol');
-  if (S.temp_max_c && S.temp_min_c) h += spark('Air temperature', [{v: S.temp_max_c, c: '#e8804a'}, {v: S.temp_min_c, c: '#5aa2d6'}], '°C');
-  if (S.ground_temp_max_c && S.ground_temp_min_c) h += spark('Ground temperature', [{v: S.ground_temp_max_c, c: '#e8804a'}, {v: S.ground_temp_min_c, c: '#5aa2d6'}], '°C');
-  if (S.dust_opacity_tau) h += spark('Dust opacity', [{v: S.dust_opacity_tau, c: '#c9a24a'}], 'tau');
-  if (S.pressure_pa) h += spark('Pressure', [{v: S.pressure_pa, c: '#aab1b9'}], 'Pa');
-  if (h) { $('condBox').style.display = ''; $('cond').innerHTML = h + '<p class="note">One value per sol for the whole site.</p>'; }
+  // the series are shown on the level of the sky-to-rock column they belong to
+  if (S.radiation_msv_per_sol) SERIES.space += spark('Radiation', [{v: S.radiation_msv_per_sol, c: '#e8804a'}], 'mSv per sol');
+  if (S.pressure_pa) SERIES.air += spark('Pressure', [{v: S.pressure_pa, c: '#aab1b9'}], 'Pa');
+  if (S.temp_max_c && S.temp_min_c) SERIES.air += spark('Air temperature', [{v: S.temp_max_c, c: '#e8804a'}, {v: S.temp_min_c, c: '#5aa2d6'}], '°C');
+  if (S.dust_opacity_tau) SERIES.air += spark('Dust opacity', [{v: S.dust_opacity_tau, c: '#c9a24a'}], 'tau');
+  if (S.ground_temp_max_c && S.ground_temp_min_c) SERIES.near += spark('Ground temperature', [{v: S.ground_temp_max_c, c: '#e8804a'}, {v: S.ground_temp_min_c, c: '#5aa2d6'}], '°C');
+}
+
+// ---------- from the sky to the rock: one column of levels, the surface in the middle ----------
+// Each level shows what can be seen at that height or depth. The surface is the full
+// view (photo, sand, dust devils, routes); going up adds the air above it, going down
+// leaves out what is in the air and shows what lies in the ground, deeper and deeper.
+const has = id => layers.some(l => l.id === id);
+const firstOf = (...ids) => ids.find(has) || null;
+// Each level: a name, its height or depth, one line of numbers (facts) and, on hover, a
+// short reminder of what it shows (hint). Written for people who already know the data.
+const rng = (a, d = 0) => a && a.length ? `${fmt(Math.min(...a), d)}…${fmt(Math.max(...a), d)}` : null;
+const S_ = D.series, dose = layers.find(l => l.id === 'dose_rate');
+const LEVELS = [
+  {id: 'radiation', name: 'Radiation', at: 'from space', layer: dose ? 'dose_rate' : null, series: 'space', space: true,
+   facts: () => dose ? `${fmt(dose.openUsvH, 1)} µSv/h open ground, sol ${dose.sol} · shelter to ${dose.min} %` : 'no dose data',
+   hint: 'Dose rate from Curiosity RAD, spread over the terrain by sky view and air column.'},
+  {id: 'air', name: 'Atmosphere', at: 'to ~40 km', fog: 1, series: 'air',
+   facts: () => S_.pressure_pa || S_.temp_max_c ? (S_.sol && S_.sol.length ? `sols ${S_.sol[0]}–${S_.sol[S_.sol.length - 1]}` : '') : 'no data',
+   hint: 'Rover weather (REMS) per sol: pressure, air minimum and maximum.'},
+  DV && {id: 'devils', name: 'Dust devils', at: 'to ~1 km', devils: 3, paths: true,
+   facts: () => `${fmt(devilRate(dv.hour), 2)} per hour at ${clock(dv.hour)} · drawn ×3 · ribbons = tracks`,
+   hint: 'Forecast from the hazards model (right panel). Ribbons: each vortex track over its remaining life.'},
+  SAND && {id: 'near', name: 'Blowing sand', at: '0–2 m', layer: 'sand_fraction', veil: 1.8, series: 'near',
+   facts: () => `sand ≥ 50 % on ${fmt(SAND.share * 100, 0)} % of the site`,
+   hint: 'Sand fraction from HiRISE image and DTM cues. Drifting sheets are illustrative.'},
+  {id: 'surface', name: 'Surface', at: 'ground', layer: 'photo', ground: true, facts: () => '', hint: 'HiRISE orthoimage with everything on the map.'},
+  firstOf('mineral_dominant', 'science_score') && {id: 'skin', name: 'Minerals', at: 'top mm', layer: firstOf('mineral_dominant', 'science_score'),
+   facts: () => 'CRISM, dominant mineral group', hint: 'Clearest CRISM signature per cell; transparent = below detection.'},
+  has('thermal_inertia') && {id: 'loose', name: 'Loose ground', at: 'top cm', layer: 'thermal_inertia',
+   facts: () => 'THEMIS thermal inertia, 100 m', hint: 'Low = loose sand and dust, high = rock.'},
+  {id: 'rock', name: 'Rock and relief', at: 'metres', layer: firstOf('ridge_index', 'slope'), depth: 2.4,
+   facts: () => 'height above the 30 m mean', hint: 'Red = ridge, blue = trough. Block sides show strata.'},
+].filter(Boolean);
+const SURF = LEVELS.findIndex(l => l.ground);
+let level = SURF;
+$('column').innerHTML = LEVELS.map((l, i) => `<div class="lv${l.ground ? ' ground' : ''}${l.nodata ? ' nodata' : ''}" data-i="${i}"><span>${l.name}</span><small>${l.at}</small></div>`).join('') + '<i class="handle"></i>';
+const rowMid = i => { const e = $('column').querySelectorAll('.lv')[i]; return e.offsetTop + e.offsetHeight / 2; };
+const moveHandle = y => { $('column').querySelector('.handle').style.top = y + 'px'; };
+function setLevel(i) {
+  i = Math.max(0, Math.min(LEVELS.length - 1, i));
+  const L = LEVELS[i], changed = i !== level; level = i;
+  document.querySelectorAll('#column .lv').forEach((e, k) => e.classList.toggle('on', k === i));
+  if (!$('column').classList.contains('dragging')) moveHandle(rowMid(i));
+  Object.assign(view, {below: i > SURF, fog: L.fog || 0, devilBoost: L.devils || 1, veilBoost: L.veil || 1, depth: L.depth || 1, paths: !!L.paths});
+  document.body.classList.toggle('space', !!L.space);
+  applyToggles();
+  setLayer(L.layer || 'photo');
+  $('levelText').innerHTML = L.facts() ? `<em>${L.facts()}</em>` : '';
+  $('levelBox').title = L.hint || '';
+  $('legend').insertAdjacentHTML('beforeend', L.series ? SERIES[L.series] : '');
+  if (changed) try {                                  // the level goes into the link, like the camera
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (i === SURF) p.delete('level'); else p.set('level', L.id);
+    history.replaceState(null, '', '#' + decodeURIComponent(p.toString()));
+  } catch (e) {}
+}
+{ const col = $('column');
+  const at = y => { const rows = [...col.querySelectorAll('.lv')]; let best = 0, bd = 1e9;
+    rows.forEach((e, k) => { const b = e.getBoundingClientRect(), d = Math.abs(b.top + b.height / 2 - y); if (d < bd) { bd = d; best = k; } }); return best; };
+  let dragging = false;
+  // while dragging, the handle follows the finger smoothly; on release it settles on the level
+  const follow = y => { const b = col.getBoundingClientRect(); moveHandle(Math.max(rowMid(0), Math.min(rowMid(LEVELS.length - 1), y - b.top))); };
+  col.addEventListener('pointerdown', e => { dragging = true; col.setPointerCapture(e.pointerId); col.classList.add('dragging'); follow(e.clientY); setLevel(at(e.clientY)); });
+  col.addEventListener('pointermove', e => { if (dragging) { follow(e.clientY); const k = at(e.clientY); if (k !== level) setLevel(k); } });
+  const release = () => { if (!dragging) return; dragging = false; col.classList.remove('dragging'); moveHandle(rowMid(level)); };
+  col.addEventListener('pointerup', release); col.addEventListener('pointercancel', release);
+  col.addEventListener('dblclick', () => setLevel(SURF));
+  col.addEventListener('keydown', e => {
+    if (e.key === 'ArrowUp') { setLevel(level - 1); e.preventDefault(); }
+    if (e.key === 'ArrowDown') { setLevel(level + 1); e.preventDefault(); }
+    if (e.key === 'Home' || e.key === 'Escape') { setLevel(SURF); e.preventDefault(); }
+  });
 }
 
 // ---------- go ----------
@@ -1011,7 +1228,8 @@ uniforms.uTexel.value.set(uniforms.uBase.value.image.width, uniforms.uBase.value
 uniforms.uMask.value = await texture(D.mask);
 if (D.normals) { uniforms.uNormal.value = await texture(D.normals); uniforms.uHasNormal.value = 1; }
 if (SAND) { const t = await texture(SAND.tex); t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; uniforms.uSand.value = t; }
-sun(); $('op').oninput(); $('exv').textContent = '1.00'; layout(); setLayer('photo');
+sun(); $('op').oninput(); $('exv').textContent = '1.00'; layout();
+{ const m = location.hash.match(/level=([a-z]+)/), k = m ? LEVELS.findIndex(l => l.id === m[1]) : -1; level = -1; setLevel(k >= 0 ? k : SURF); }
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight; if (!w || !h) return;
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
@@ -1140,6 +1358,14 @@ function frame(now) {
   placeCamera();
   updateDevils(now);
   updateSand(now);
+  sun();
+  // ease the view towards what the chosen level of the column asks for
+  uniforms.uFog.value += (view.fog - uniforms.uFog.value) * .06;
+  uniforms.uLayerMix.value = Math.min(1, uniforms.uLayerMix.value + .045);
+  const airWas = view.air; view.air += ((view.below ? 0 : 1) - view.air) * .07;
+  if (devilPoints) devilPoints.material.uniforms.uFade.value = view.air;
+  if ((airWas > .01) !== (view.air > .01)) applyToggles();
+  strataDepth.value += (STRATA_DEPTH * view.depth - strataDepth.value) * .06;
   // keep it smooth: if frames take too long, render fewer pixels (never below the screen's own)
   if (frame.last) { frame.avg = (frame.avg ?? 16) * .95 + (now - frame.last) * .05; frame.n = (frame.n ?? 0) + 1; }
   frame.last = now;
@@ -1162,7 +1388,7 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 $('loading').classList.add('gone');
-window.__viewer = {D, cam, goal, setLayer, select, layers: layers.map(l => l.id), stops: stops.length};
+window.__viewer = {D, cam, goal, setLayer, select, uniforms, layers: layers.map(l => l.id), stops: stops.length};
 </script>
 </body>
 </html>

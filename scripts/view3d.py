@@ -289,6 +289,44 @@ def normal_map(site: Site) -> str:
     return encode(np.round(rgba * 255).astype(np.uint8), quality=94)
 
 
+def radiation(site: Site, folder: Path) -> tuple[dict, np.ndarray] | None:
+    """Dose-rate map from the planner's environment model, for the sol the plans are for.
+
+    Returns (overlay layer, dose map in µSv per Earth hour). The map is the site-wide dose
+    of that sol (Curiosity RAD) spread over the terrain: cliffs and narrow troughs hide part
+    of the sky, so less cosmic radiation reaches them, and lower ground has a little more
+    air overhead. The effect is a few percent; the layer shows it relative to open ground.
+    """
+    from mars_map.environment import Environment
+    env = Environment(site)
+    sol = None
+    doc = folder / "eva_plans.json"
+    if doc.exists():
+        sol = json.loads(doc.read_text(encoding="utf-8")).get("conditions", {}).get("sol")
+    sols = env.sols
+    if sol is None or (sols and sol not in sols):
+        sol = sols[0] if sols else 0
+    dose = env.dose_rate(sol)
+    open_ground = float(np.percentile(dose, 95))
+    rel = (dose / open_ground - 1.0) * 100.0                   # % against open ground, <= ~0
+    lo = float(min(np.percentile(rel, 0.5), -1.0))
+    cm = LinearSegmentedColormap.from_list("shelter", ["#0b4f6c", "#1f8a9e", "#7fd1c6", "#f3efe2"])
+    alpha = np.clip(rel / lo, 0, 1) ** 0.7 * 0.95 + 0.05     # open ground almost clear, shelter solid
+    layer = {"id": "dose_rate", "title": "Radiation shelter", "group": "Environment", "kind": "ramp",
+             "unit": "% dose", "min": f"{lo:.0f}", "max": "0", "stops": ramp(cm),
+             "note": f"Dose of sol {sol}: {dose_rate_usv_h_note(open_ground)} on open ground. Cliffs and narrow "
+                     "troughs hide part of the sky, and cosmic radiation comes from the sky, so it is lower next to "
+                     "them (blue). The effect is a few percent: on Mars radiation is mostly a matter of which sol "
+                     "and how long, not where. The Radiation shelter route uses this map.",
+             "tex": encode(colorize(rel, cm, lo, 0.0, alpha)), "openUsvH": round(open_ground, 2), "sol": sol}
+    print(f"  radiation: sol {sol}, open ground {open_ground:.1f} uSv/h, best shelter {lo:.1f} %")
+    return layer, dose
+
+
+def dose_rate_usv_h_note(v: float) -> str:
+    return f"{v:.1f} µSv per hour ({v * 24.66 / 1000:.2f} mSv per sol)"
+
+
 def sand_data(site: Site) -> dict | None:
     """Sand for the 3D view: amount and ripple direction per cell, plus the wind axis.
 
@@ -355,6 +393,15 @@ def build(folder: Path) -> Path:
         probes["reachable"] = probe(sub("reachable"), 1)
     if "sand_fraction" in L:
         probes["sand_fraction"] = probe(sub("sand_fraction"), 1 / 254)
+    try:
+        rad = radiation(site, folder)
+    except Exception as e:                        # a site without the inputs still gets a page
+        print(f"  radiation map skipped: {e}")
+        rad = None
+    if rad:
+        layers.append(rad[0])
+        d = rad[1][::step, ::step]
+        probes["dose_rate"] = probe(d, max(float(d.max()) / 250, 1e-3))
     blocked = L["blocked"] if "blocked" in L else (L["terrain_class"] == 3)
     mask = np.zeros(blocked.shape + (4,), np.uint8)
     mask[blocked] = (255, 255, 255, 255)
