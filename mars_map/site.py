@@ -178,6 +178,7 @@ class Site:
         meta = json.loads((folder / "site.json").read_text(encoding="utf-8"))
         with np.load(folder / "layers.npz") as z:
             layers = {k: z[k] for k in z.files}
+        _derive_missing(layers, float(meta["resolution_m"]))
         site = cls(
             name=meta["name"],
             source=meta.get("source", "unknown"),
@@ -193,6 +194,29 @@ class Site:
         )
         site.validate()
         return site
+
+
+def _derive_missing(layers: dict, resolution_m: float) -> None:
+    """Fill in layers that newer code derives but an older layers.npz lacks.
+
+    layers.npz is not in git: every computer keeps the one it built. A file built before the
+    sand map existed would otherwise give pages and plans without sand, silently. The sand
+    map needs only layers such a file already has (photo, texture, slope, roughness,
+    ridges), so it is computed here, and sandy cells become terrain class "sand" as
+    fusion.stack does.
+    """
+    need = ("optical", "optical_texture", "slope", "roughness", "ridge_index")
+    if "sand_fraction" in layers or not all(k in layers for k in need):
+        return
+    from .fusion.sand import SAND_CLASS_MIN, sand_fraction
+    sand = sand_fraction(layers, resolution_m)
+    if sand is None:
+        return
+    layers["sand_fraction"] = sand
+    if "terrain_class" in layers:
+        cls = layers["terrain_class"].copy()
+        cls[(cls == 0) & (sand >= SAND_CLASS_MIN)] = 1      # bedrock that is mostly sand
+        layers["terrain_class"] = cls
 
 
 def slope_deg(elevation: np.ndarray, resolution_m: float) -> np.ndarray:
