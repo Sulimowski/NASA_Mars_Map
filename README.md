@@ -74,6 +74,12 @@ http://127.0.0.1:8770/data/gale_boxwork/view3d.html). In the map, the box
    numbers are for your points.
 4. **Reset to site** brings back the site's own base, targets and plans.
 
+The trip runs once. When routes are planned (or a plan is picked in the EVA plan box, the
+same one included) the astronaut sets off from the base, goes through the stops and comes
+back, and then stays at the base. **Pause** / **Resume** hold the trip where it is;
+**Go again** repeats it. Any point except the base can be renamed (✎) or removed (✕),
+the site's own targets too; after removing a point, plan the routes again.
+
 What to know:
 
 - It needs `scripts\serve.py`. A page opened from a file or from `python -m http.server`
