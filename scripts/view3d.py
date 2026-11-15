@@ -13,8 +13,7 @@ Shown automatically when the files are there:
 * `<site>/eva_plans.json`       the three EVA plans (shielded, eco, science) written by
                                 `python -m mars_map.pipeline --site <site>`; the page switches
                                 between them. The older single `astronaut_plan.json` is still
-                                read when there is no `eva_plans.json`;
-* Curiosity's track, for regions the rover drove through.
+                                read when there is no `eva_plans.json`.
 """
 
 import argparse
@@ -224,21 +223,6 @@ def probe(data, scale, offset=0.0, missing=255) -> dict:
     return {"scale": scale, "offset": offset, "data": b64(q)}
 
 
-def rover_track(site: Site) -> list[list[float]]:
-    """Curiosity's track inside the site, if this is a known region and the feed is reachable."""
-    try:
-        import mars_map.ingest  # noqa: F401  (OS certificate store)
-        from mars_map.grid import REGIONS
-        from mars_map.ingest.rover import curiosity_track
-        grid = REGIONS.get(site.name)
-        if grid is None:
-            return []
-        return [[round(w.x_m, 1), round(w.y_m, 1), w.sol] for w in curiosity_track(grid)]
-    except Exception as e:                                   # no network, no cache: just no track
-        print(f"  rover track skipped: {e}")
-        return []
-
-
 def eva_plans(folder: Path, site: Site) -> dict | None:
     """The three EVA plans of the planner (`python -m mars_map.pipeline --site <folder>`),
     reduced to what the page draws. None when `<folder>/eva_plans.json` is not there."""
@@ -252,6 +236,16 @@ def eva_plans(folder: Path, site: Site) -> dict | None:
     if plans:
         print(f"  plans: {', '.join(i['id'] for i in plans['items'])} from {path.name} (sol {plans['sol']})")
     return plans
+
+
+def rover_mesh() -> dict | None:
+    """The simplified rover model drawn when the trip is by rover (`scripts/make_rover_model.py`
+    writes it). None when the file is missing: the page then draws a plain box."""
+    path = ROOT / "mars_map" / "viewer" / "rover_mesh.json"
+    if not path.exists():
+        return None
+    m = json.loads(path.read_text(encoding="utf-8"))
+    return {k: m[k] for k in ("pos", "col", "idx", "unit", "vertices", "triangles", "size_m")}
 
 
 def dust_devils(site: Site, folder: Path) -> dict | None:
@@ -442,8 +436,9 @@ def build(folder: Path) -> Path:
         "probes": probes, "terrainNames": list(TERRAIN_CLASSES.values()),
         "mineralNames": mineral_names,
         "start": list(site.start), "targets": targets, "noGo": site.no_go,
-        "track": rover_track(site), "route": route, "plans": plans, "series": site.series,
+        "route": route, "plans": plans, "series": site.series,
         "devils": dust_devils(site, folder),
+        "roverMesh": rover_mesh(),
         "sand": sand_data(site),
         "mission": {"maxSlope": m.max_slope_deg, "hardSlope": m.hard_max_slope_deg, "evaHours": m.eva_max_hours,
                     "maxDose": m.max_dose_msv, "maxKm": m.max_distance_km, "speed": m.walk_speed_flat_kmh},

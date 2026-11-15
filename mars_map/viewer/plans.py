@@ -35,6 +35,11 @@ def plans_view(doc: dict, radiation_measured: bool | None = None) -> dict | None
             "points": _thin([[w["x_m"], w["y_m"]] for w in p.get("waypoints", [])]),
             "summary": p.get("summary", {}), "usage": p.get("usage_pct", {}),
             "targets": p.get("visited_targets", []), "warnings": notes,
+            # when the traveller gets to each stop, minutes after leaving the base
+            "stops": [{"name": st.get("name"), "kind": st.get("kind"),
+                       "x": st.get("x_m"), "y": st.get("y_m"),
+                       "arrive": st.get("arrive_min"), "depart": st.get("depart_min"),
+                       "dwell": st.get("dwell_min")} for st in p.get("stops", [])],
         })
     if not items:
         return None
@@ -42,6 +47,7 @@ def plans_view(doc: dict, radiation_measured: bool | None = None) -> dict | None
     out = {"sol": cond.get("sol"), "ltst": cond.get("ltst_h"),
            "particleEvent": bool(cond.get("particle_event")),
            "doseRate": rate.get("median"), "groundTemp": temp.get("median"),
+           "vehicle": doc.get("vehicle", "astronaut"),
            "items": items}
     if radiation_measured is not None:
         # Without a radiation series the planner falls back to a typical Gale dose.

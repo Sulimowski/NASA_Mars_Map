@@ -98,13 +98,49 @@ The API, for the GUI or anything else: `POST /api/plan` with
 `GET /api/health` lists the built sites. Details in the header of
 [`scripts/serve.py`](scripts/serve.py).
 
+## On foot or by rover
+
+**Plan** computes the trip for both transports at once, for the same base and points. The
+Routes box then has two tabs, **On foot** and **Rover**, each with its total time and
+distance. A tab switches the route on the map, the plans to choose from, the arrival time
+next to every stop, and the marker that travels the route (a ball on foot, a box for the
+rover; the faster transport also finishes its trip sooner on screen).
+
+Under the tabs: the **farthest point** from the base (in a straight line), how far it is,
+and how long after leaving the base the chosen route gets there, split into moving time and
+work done at earlier stops. If the route leaves that point out, it says so.
+
+The rover on the map is a simplified model of Perseverance. The source (NASA's
+`25042_Perseverance.glb`: 199 000 triangles, 24 textures, 11.7 MB) is not in the repository;
+`scripts\make_rover_model.py <file.glb>` reduces it once to
+[`mars_map/viewer/rover_mesh.json`](mars_map/viewer/rover_mesh.json): 12 876 triangles and
+168 kB, with the textures and a soft top light baked into one colour per vertex. The page
+draws it in one unlit draw call, with no textures and no model loader, about twelve times
+its real size so it can be seen on a 2 km site, nose along the route. Without that file the
+page draws a plain box.
+
+What to know:
+
+- The walk has three plans and a physiology check; the rover has two plans (least battery,
+  most science), a wheel and battery model, and no physiology check. Its table shows battery
+  where the walk shows oxygen.
+- The two transports may visit the points in a different order, so the same point can have
+  very different arrival times.
+- Planning both takes a little longer than the walk alone (the rover adds a second or two).
+- Rerouting around a dust devil uses the transport on screen.
+- The precomputed "Example walk" is on foot only.
+- `POST /api/plan` takes `"vehicles": ["astronaut", "rover"]` (default both) and answers with
+  one set of plans per vehicle under `modes`; `POST /api/reroute` takes `"vehicle"`.
+
 ## Stepping around dust devils during a walk
 
 With the map opened from `scripts\serve.py`, the astronaut on the route reacts to the dust
 devils drawn on the map:
 
-1. Every frame the page checks each vortex: if the track it will sweep over the rest of its
-   life comes within 60 m of the next 350 m of the route, it is a threat.
+1. Every frame the page checks each vortex against the next 350 m of the route: it is a
+   threat only if it will be within 60 m of a piece of route at about the time the traveller
+   gets there (1.5 s either side). A vortex whose track merely crosses the route earlier or
+   later is ignored; counting those stopped the trip every few seconds on a busy map.
 2. The astronaut stops. The corridor to keep out of is outlined in red.
 3. The page asks the planner (`POST /api/reroute`) for a route from where the astronaut
    stands, through the stops not yet visited (in the planned order) and back to the base,
@@ -155,9 +191,7 @@ Shown automatically when present:
   and its numbers (distance, time, climb, oxygen, battery, dose), the targets left out, the
   radio shadow and the physiology verdict. The stamp says NO-GO when a limit is exceeded or
   the physiology check fails. Run the planner before `view3d.py`: the page is built from
-  the files that exist at that moment;
-- the rover's track, for regions a rover drove through (Curiosity in Gale, Perseverance in
-  Jezero and Nili Planum).
+  the files that exist at that moment.
 
 `--serve` always uses port 8765, so it shows one site at a time. For several at once, serve
 each site folder on its own port:
@@ -420,7 +454,7 @@ Offline check (fake products, a local web server, a generated DTM):
 | `mola`, `hrsc_mola`, `tes_albedo` | USGS planetarymaps | global mosaics | GeoTIFF |
 | `rems` | mars.nasa.gov | weather feed `?feed=weather&category=msl` | JSON |
 | `rad` | PDS PPI | `MSL-M-RAD-3-RDR-V1.0` | one text file per sol, 18 MB |
-| rover track | mars.nasa.gov | `mmgis-maps/MSL/Layers/json/MSL_waypoints.json` | GeoJSON |
+| rover waypoints (for the rover-stop targets) | mars.nasa.gov | `mmgis-maps/MSL/Layers/json/MSL_waypoints.json` | GeoJSON |
 | rover photos | mars.nasa.gov | `api/v1/raw_image_items/?condition_2=<sol>:sol:in` | JSON with image links |
 | `meda` (Perseverance weather) | mars.nasa.gov | weather feed `?feed=weather&category=mars2020` | JSON, a handful of sols |
 | Perseverance track | mars.nasa.gov | `mmgis-maps/M20/Layers/json/M20_waypoints.json` | GeoJSON |

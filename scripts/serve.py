@@ -17,7 +17,12 @@ It serves the project folder like `python -m http.server` (so `gui/` and
     {"site": "gale_boxwork",
      "start": [x_m, y_m],
      "targets": [{"name": "Point 1", "x": x_m, "y": y_m, "priority": 1, "dwell": 20}, ...],
-     "sol": 4650}                      # optional, default: the first sol the site has
+     "sol": 4650,                      # optional, default: the first sol the site has
+     "vehicles": ["astronaut", "rover"]}   # optional, default: both
+
+Every vehicle asked for is planned for the same base and points: `astronaut` is a walk
+(three plans, with the physiology check), `rover` is a drive (two plans, wheel and battery
+model, no physiology check). The answer has one set of plans per vehicle under `modes`.
 
 and answers with the three plans in the shape the page draws (`mars_map/viewer/plans.py`),
 the points as the planner used them (moved to walkable ground if they were on blocked
@@ -67,6 +72,7 @@ from mars_map.astronaut_router import STRATEGIES, EvaRouter  # noqa: E402
 from mars_map.astronaut_terrain import build_astronaut_terrain  # noqa: E402
 from mars_map.biomechanics import SuitParams  # noqa: E402
 from mars_map.pipeline import build_conditions, plan_site  # noqa: E402
+from mars_map.rover import RoverParams, build_rover_terrain  # noqa: E402
 from mars_map.viewer.plans import plans_view  # noqa: E402
 
 SITE_NAME = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -74,6 +80,7 @@ MAX_TARGETS = 12
 MAX_BODY = 64_000
 SNAP_RADIUS_M = 60.0
 MAX_AVOID = 6
+VEHICLES = ("astronaut", "rover")
 AVOID_RADIUS_M = (10.0, 400.0)                 # accepted range of a corridor's half-width
 
 
@@ -170,17 +177,29 @@ class Planner:
             site.start = (round(sx, 1), round(sy, 1))
             site.targets = chosen
             sol = req.get("sol")
-            try:
-                result = plan_site(site, sol=int(sol) if sol is not None else None, env=env)
-            except (RuntimeError, ValueError, KeyError) as e:
-                raise PlanError(f"the planner could not plan this walk: {e}") from e
-
-            plans = plans_view(result.to_dict(),
-                               radiation_measured=bool(site.series.get("radiation_msv_per_sol")))
-            if plans is None:
-                raise PlanError("the planner returned no plan")
+            sol = int(sol) if sol is not None else None
+            wanted = [v for v in (req.get("vehicles") or VEHICLES) if v in VEHICLES] or list(VEHICLES)
+            measured = bool(site.series.get("radiation_msv_per_sol"))
+            modes: dict[str, dict] = {}
+            failed: dict[str, str] = {}
+            for vehicle in wanted:                         # the same base and points for each
+                try:
+                    result = plan_site(site, sol=sol, env=env, vehicle=vehicle)
+                    view = plans_view(result.to_dict(), radiation_measured=measured)
+                    if view is None:
+                        raise RuntimeError("no plan returned")
+                    modes[vehicle] = view
+                except (RuntimeError, ValueError, KeyError) as e:
+                    failed[vehicle] = str(e)
+            if not modes:
+                raise PlanError("the planner could not plan this trip: " + "; ".join(failed.values()))
+            for vehicle, why in failed.items():
+                notes.append(f"No plan for the {'rover' if vehicle == 'rover' else 'walk'}: {why}")
+            if (name, sol) not in self._conditions:         # ready for the first reroute of the trip
+                self._conditions[(name, sol)] = build_conditions(base, env, sol, 11.0)
+            plans = modes.get("astronaut") or next(iter(modes.values()))
             return {
-                "plans": plans, "notes": notes,
+                "plans": plans, "modes": modes, "notes": notes,
                 "start": list(site.start),
                 "targets": [{"name": t.name, "x": t.x_m, "y": t.y_m, "priority": t.priority,
                              "dwell": t.dwell_min, "note": t.note} for t in chosen],
@@ -220,10 +239,18 @@ class Planner:
 
             site = copy.copy(base)
             site.no_go = list(base.no_go) + zones           # the corridors are closed ground
-            suit = SuitParams()
-            terrain = build_astronaut_terrain(site, suit=suit, dose_rate_msv_h=cond.dose_rate_msv_h,
-                                              ground_temp_c=cond.ground_temp_c)
-            router = EvaRouter(site, terrain, suit)
+            if req.get("vehicle") == "rover":               # wheels: the rover's ground model
+                mover = RoverParams()
+                terrain = build_rover_terrain(site, mover, dose_rate_msv_h=cond.dose_rate_msv_h,
+                                              ground_temp_c=cond.ground_temp_c,
+                                              sun_w_m2=cond.sun_w_m2)
+                if strategy not in mover.strategies:
+                    strategy = "science"
+            else:
+                mover = SuitParams()
+                terrain = build_astronaut_terrain(site, suit=mover, dose_rate_msv_h=cond.dose_rate_msv_h,
+                                                  ground_temp_c=cond.ground_temp_c)
+            router = EvaRouter(site, terrain, mover)
 
             points: list[tuple[float, float]] = []
             dist = minutes = 0.0
