@@ -73,6 +73,11 @@ class SuitParams:
     # Crew condition and work
     sols_on_surface: float = 30.0         # time since landing; sets the fitness of the crew member
     stop_task: str = TaskType.SAMPLING.value   # kind of work at a target stop
+    # Share of the sustainable power a planned step may need. The astronaut simulator
+    # lowers what the crew member can hold as fatigue and heat build up during the walk;
+    # without this margin a climb the router accepts at the start of the walk can be
+    # beyond the crew member two hours later.
+    power_margin: float = 0.94
 
     @property
     def total_mass_kg(self) -> float:
@@ -140,8 +145,17 @@ def locomotion(dist_m, rise_m, eta, speed_mult, mission: MissionParams,
     steps = vectorized.walking_steps(dist_m, rise_m, eta, speed_mult, heater_w,
                                      astronaut=astronaut, suit=suit_profile,
                                      cfg=suit.config, power_cap_w=cap)
-    return (steps.time_s, steps.metabolic_w, vectorized.o2_kg_to_litres(steps.o2_kg),
-            steps.battery_j / HOUR_S)
+    time_s, o2_l, wh = steps.time_s, vectorized.o2_kg_to_litres(steps.o2_kg), steps.battery_j / HOUR_S
+    if suit.power_margin < 1.0:
+        # The pace is set by the full power; a step is walkable only if it also fits under
+        # power_margin of it, so it stays walkable when fatigue and heat lower the limit.
+        hard = vectorized.walking_steps(dist_m, rise_m, eta, speed_mult, heater_w,
+                                        astronaut=astronaut, suit=suit_profile, cfg=suit.config,
+                                        power_cap_w=cap * suit.power_margin)
+        bad = ~np.isfinite(hard.time_s)
+        if np.any(bad):
+            time_s, o2_l, wh = (np.where(bad, np.inf, a) for a in (time_s, o2_l, wh))
+    return time_s, steps.metabolic_w, o2_l, wh
 
 
 def dwell(minutes: float, heater_w: float = 0.0, suit: SuitParams = SuitParams()

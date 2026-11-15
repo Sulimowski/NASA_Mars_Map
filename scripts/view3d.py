@@ -283,7 +283,36 @@ def normal_map(site: Site) -> str:
     return encode(np.round(rgba * 255).astype(np.uint8), quality=94)
 
 
-def radiation(site: Site, folder: Path) -> tuple[dict, np.ndarray] | None:
+def devil_risk(site: Site, env, folder: Path) -> tuple[dict, np.ndarray] | None:
+    """Where dust devils are likelier: the planner's susceptibility map (mars_map.dust_devils).
+
+    Returns (overlay layer, S map). S is relative: 1 = the site average; the forecast
+    gives the absolute rate. The vortices on the page are spawned according to it.
+    """
+    from mars_map.dust_devils import DevilHazard
+    sol = None
+    doc = folder / "eva_plans.json"
+    if doc.exists():
+        sol = json.loads(doc.read_text(encoding="utf-8")).get("conditions", {}).get("sol")
+    if sol is not None and env.sols and sol not in env.sols:
+        sol = None
+    hz = DevilHazard.for_site(site, env, sol)
+    if hz is None:
+        return None
+    s = hz.s_map
+    cm = LinearSegmentedColormap.from_list("devils", ["#2a1d3a", "#6b3d7a", "#c0587a", "#f08a5d", "#ffd27a"])
+    alpha = np.clip((s - 0.6) / 1.6, 0, 1) ** 0.8 * 0.85 + 0.08
+    layer = {"id": "devil_risk", "title": "Dust devil risk", "group": "Environment", "kind": "ramp",
+             "unit": "× site mean", "min": "0", "max": "2.5", "stops": ramp(cm),
+             "note": "Where dust devils are likelier than the site average: strong heating (sunlit, "
+                     "low thermal inertia), level ground, loose sand. A ranking from physics, not fitted "
+                     "to vortex tracks; the forecast sets the absolute rate.",
+             "tex": encode(colorize(s, cm, 0.0, 2.5, alpha))}
+    print(f"  dust devil risk: S {np.percentile(s, 5):.2f}..{np.percentile(s, 95):.2f} (5-95 %)")
+    return layer, s
+
+
+def radiation(site: Site, folder: Path, env=None) -> tuple[dict, np.ndarray] | None:
     """Dose-rate map from the planner's environment model, for the sol the plans are for.
 
     Returns (overlay layer, dose map in µSv per Earth hour). The map is the site-wide dose
@@ -292,7 +321,7 @@ def radiation(site: Site, folder: Path) -> tuple[dict, np.ndarray] | None:
     air overhead. The effect is a few percent; the layer shows it relative to open ground.
     """
     from mars_map.environment import Environment
-    env = Environment(site)
+    env = env or Environment(site)
     sol = None
     doc = folder / "eva_plans.json"
     if doc.exists():
@@ -387,8 +416,11 @@ def build(folder: Path) -> Path:
         probes["reachable"] = probe(sub("reachable"), 1)
     if "sand_fraction" in L:
         probes["sand_fraction"] = probe(sub("sand_fraction"), 1 / 254)
+    env = None
     try:
-        rad = radiation(site, folder)
+        from mars_map.environment import Environment
+        env = Environment(site)
+        rad = radiation(site, folder, env)
     except Exception as e:                        # a site without the inputs still gets a page
         print(f"  radiation map skipped: {e}")
         rad = None
@@ -396,6 +428,15 @@ def build(folder: Path) -> Path:
         layers.append(rad[0])
         d = rad[1][::step, ::step]
         probes["dose_rate"] = probe(d, max(float(d.max()) / 250, 1e-3))
+    risk = None
+    if env is not None:
+        try:
+            risk = devil_risk(site, env, folder)
+        except Exception as e:
+            print(f"  dust devil risk skipped: {e}")
+    if risk:
+        layers.append(risk[0])
+        probes["devil_s"] = probe(risk[1][::step, ::step], 3.0 / 254)
     blocked = L["blocked"] if "blocked" in L else (L["terrain_class"] == 3)
     mask = np.zeros(blocked.shape + (4,), np.uint8)
     mask[blocked] = (255, 255, 255, 255)

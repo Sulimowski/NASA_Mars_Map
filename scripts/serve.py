@@ -69,7 +69,8 @@ sys.path.insert(0, str(ROOT))
 from mars_map import DATA_DIR, Site, Target  # noqa: E402
 from mars_map.environment import Environment  # noqa: E402
 from mars_map.astronaut_router import STRATEGIES, EvaRouter  # noqa: E402
-from mars_map.astronaut_terrain import build_astronaut_terrain  # noqa: E402
+from mars_map.astronaut_terrain import build_astronaut_terrain, rasterize_nogo  # noqa: E402
+from mars_map.dust_devils import DevilHazard  # noqa: E402
 from mars_map.biomechanics import SuitParams  # noqa: E402
 from mars_map.pipeline import build_conditions, plan_site  # noqa: E402
 from mars_map.rover import RoverParams, build_rover_terrain  # noqa: E402
@@ -84,15 +85,20 @@ VEHICLES = ("astronaut", "rover")
 AVOID_RADIUS_M = (10.0, 400.0)                 # accepted range of a corridor's half-width
 
 
-def corridor_polygon(x1: float, y1: float, x2: float, y2: float, r: float, n: int = 10
-                     ) -> list[tuple[float, float]]:
-    """Outline of everything within `r` of the segment: two half-circles joined by straight sides."""
+def corridor_polygon(x1: float, y1: float, x2: float, y2: float, r: float, n: int = 10,
+                     r2: float | None = None) -> list[tuple[float, float]]:
+    """Outline of everything within `r` of the segment: two half-circles joined by straight sides.
+
+    With r2 the corridor widens from r at (x1, y1) to r2 at (x2, y2): a cone of where a
+    dust devil may be, since its track wanders more the further ahead it is predicted.
+    """
+    r2 = r if r2 is None else r2
     a = np.arctan2(y2 - y1, x2 - x1) if (x1, y1) != (x2, y2) else 0.0
     out = []
-    for cx, cy, a0 in ((x2, y2, a - np.pi / 2), (x1, y1, a + np.pi / 2)):
+    for cx, cy, rr, a0 in ((x2, y2, r2, a - np.pi / 2), (x1, y1, r, a + np.pi / 2)):
         for k in range(n + 1):
             t = a0 + np.pi * k / n
-            out.append((float(cx + r * np.cos(t)), float(cy + r * np.sin(t))))
+            out.append((float(cx + rr * np.cos(t)), float(cy + rr * np.sin(t))))
     return out
 
 
@@ -106,6 +112,7 @@ class Planner:
     def __init__(self):
         self._sites: dict[str, tuple[Site, Environment]] = {}
         self._conditions: dict[tuple[str, int | None], object] = {}
+        self._routers: dict[tuple[str, int | None, str], EvaRouter] = {}   # per vehicle, kept for reroutes
         self._lock = threading.Lock()
 
     @staticmethod
@@ -178,25 +185,33 @@ class Planner:
             site.targets = chosen
             sol = req.get("sol")
             sol = int(sol) if sol is not None else None
+            start_h = req.get("start_h")
+            try:
+                start_h = None if start_h in (None, "") else min(17.0, max(5.0, float(start_h)))
+            except (TypeError, ValueError) as e:
+                raise PlanError(f"bad start hour: {e}") from e
             wanted = [v for v in (req.get("vehicles") or VEHICLES) if v in VEHICLES] or list(VEHICLES)
             measured = bool(site.series.get("radiation_msv_per_sol"))
             modes: dict[str, dict] = {}
             failed: dict[str, str] = {}
             for vehicle in wanted:                         # the same base and points for each
                 try:
-                    result = plan_site(site, sol=sol, env=env, vehicle=vehicle)
+                    if vehicle == "rover":                 # the rover planner has no start-hour choice
+                        result = plan_site(site, sol=sol, env=env, vehicle="rover")
+                    else:
+                        result = plan_site(site, sol=sol, env=env, start_h=start_h)
                     view = plans_view(result.to_dict(), radiation_measured=measured)
                     if view is None:
                         raise RuntimeError("no plan returned")
                     modes[vehicle] = view
+                    # the router of this plan serves the reroutes of its trip: no rebuild per dust devil
+                    self._routers[(name, result.conditions.sol, vehicle)] = result.router
                 except (RuntimeError, ValueError, KeyError) as e:
                     failed[vehicle] = str(e)
             if not modes:
                 raise PlanError("the planner could not plan this trip: " + "; ".join(failed.values()))
             for vehicle, why in failed.items():
                 notes.append(f"No plan for the {'rover' if vehicle == 'rover' else 'walk'}: {why}")
-            if (name, sol) not in self._conditions:         # ready for the first reroute of the trip
-                self._conditions[(name, sol)] = build_conditions(base, env, sol, 11.0)
             plans = modes.get("astronaut") or next(iter(modes.values()))
             return {
                 "plans": plans, "modes": modes, "notes": notes,
@@ -221,8 +236,10 @@ class Planner:
             zones = []
             for z in (req.get("avoid") or [])[:MAX_AVOID]:
                 r = min(AVOID_RADIUS_M[1], max(AVOID_RADIUS_M[0], float(z["r"])))
+                r2 = min(AVOID_RADIUS_M[1], max(r, float(z.get("r2", r))))
                 zones.append(corridor_polygon(float(z["x1"]), float(z["y1"]),
-                                              float(z["x2"]), float(z["y2"]), r))
+                                              float(z["x2"]), float(z["y2"]), r, r2=r2))
+            elapsed_s = max(0.0, float(req.get("elapsed_s") or 0.0))
         except (KeyError, TypeError, ValueError, IndexError) as e:
             raise PlanError(f"bad reroute request: {e}") from e
         if not zones:
@@ -233,48 +250,63 @@ class Planner:
             base, env = self._load(name)
             sol = req.get("sol")
             sol = int(sol) if sol is not None else None
-            if (name, sol) not in self._conditions:         # radiation and temperature maps of the sol
-                self._conditions[(name, sol)] = build_conditions(base, env, sol, 11.0)
-            cond = self._conditions[(name, sol)]
-
-            site = copy.copy(base)
-            site.no_go = list(base.no_go) + zones           # the corridors are closed ground
-            if req.get("vehicle") == "rover":               # wheels: the rover's ground model
-                mover = RoverParams()
-                terrain = build_rover_terrain(site, mover, dose_rate_msv_h=cond.dose_rate_msv_h,
-                                              ground_temp_c=cond.ground_temp_c,
-                                              sun_w_m2=cond.sun_w_m2)
-                if strategy not in mover.strategies:
-                    strategy = "science"
-            else:
-                mover = SuitParams()
-                terrain = build_astronaut_terrain(site, suit=mover, dose_rate_msv_h=cond.dose_rate_msv_h,
-                                                  ground_temp_c=cond.ground_temp_c)
-            router = EvaRouter(site, terrain, mover)
+            vehicle = "rover" if req.get("vehicle") == "rover" else "astronaut"
+            if vehicle == "rover" and strategy not in RoverParams().strategies:
+                strategy = "science"
+            router = self._routers.get((name, sol, vehicle))
+            if router is None:                              # a page built offline: prepare once
+                if (name, sol) not in self._conditions:
+                    self._conditions[(name, sol)] = build_conditions(base, env, sol, 11.0)
+                cond = self._conditions[(name, sol)]
+                if vehicle == "rover":                      # wheels: the rover's ground model
+                    mover = RoverParams()
+                    terrain = build_rover_terrain(base, mover, dose_rate_msv_h=cond.dose_rate_msv_h,
+                                                  ground_temp_c=cond.ground_temp_c,
+                                                  sun_w_m2=cond.sun_w_m2)
+                    router = EvaRouter(base, terrain, mover)
+                else:
+                    suit = SuitParams()
+                    terrain = build_astronaut_terrain(base, suit=suit, dose_rate_msv_h=cond.dose_rate_msv_h,
+                                                      ground_temp_c=cond.ground_temp_c)
+                    start_h = req.get("start_h")
+                    router = EvaRouter(base, terrain, suit, devils=DevilHazard.for_site(base, env, cond.sol),
+                                       start_h=float(start_h) if start_h is not None else 10.0)
+                self._routers[(name, sol, vehicle)] = router
+            # the corridors are closed for these searches only; the router is not rebuilt
+            closed = rasterize_nogo(base.shape, base.resolution_m, zones)
 
             points: list[tuple[float, float]] = []
+            times: list[float] = []
             dist = minutes = 0.0
             dropped: list[str] = []
             at, at_name = here, "Current position"
             for label, x, y in via + [("Base", *home)]:
                 try:
-                    seg = router.leg(at, (x, y), strategy, at_name, label)
+                    seg = router.leg_avoiding(at, (x, y), closed, strategy, at_name, label,
+                                              elapsed_s=elapsed_s + minutes * 60.0)
                 except RuntimeError:
                     if label == "Base":
                         raise PlanError("no way back to the base that keeps out of the corridor") from None
                     dropped.append(label)                   # cut off by the corridor: skip this stop
                     continue
+                t_off = elapsed_s + minutes * 60.0
                 points += [(float(px), float(py)) for px, py in seg.points_m]
+                times += [t_off + p["t_min"] * 60.0 for p in seg.profile]
                 dist += seg.distance_m
                 minutes += seg.duration_min
                 at, at_name = (x, y), label
             if len(points) < 2:
                 raise PlanError("no route found")
+            expected = None
+            if router.devils is not None:
+                xs, ys = zip(*points)
+                expected = round(router.devils.exposure(np.array(xs), np.array(ys), np.array(times),
+                                                        router.start_h), 4)
             keep = max(1, len(points) // 600)
             thin = points[::keep] + ([points[-1]] if (len(points) - 1) % keep else [])
             return {"points": [[round(x, 1), round(y, 1)] for x, y in thin],
                     "distance_m": round(dist, 1), "duration_min": round(minutes, 1),
-                    "dropped": dropped, "strategy": strategy,
+                    "dropped": dropped, "strategy": strategy, "devils_expected": expected,
                     "seconds": round(time.perf_counter() - t0, 2)}
 
 

@@ -99,6 +99,10 @@ class PlanChecker:
             self._maps = compute_shelter_maps(self.evaluator, self.base, 0.0)
         return self._maps
 
+    def _open_route_cells(self, route: Any) -> list[tuple[int, int]]:
+        """Open the coarse cells the route passes through (see ``check``)."""
+        return _open_cells(self.evaluator, _route_cells(self.terrain, route.points_m))
+
     def check(self, plan: Any) -> dict[str, Any]:
         """Verdict of the simulator on a plan, in report units.
 
@@ -110,8 +114,17 @@ class PlanChecker:
             return {"status": "OK", "message": "no walk planned", "warnings": []}
         try:
             route = route_from_mission_plan(plan)
-            report = evaluate_route(self.evaluator, route, start_time_s=0.0, maps=self.maps,
-                                    coverage=self.coverage)
+            # The planner walked every step of this route on its fine grid. A coarse cell the
+            # route passes through counts as passable here even if most of it is cliff: the
+            # merged cell says "impassable" because of what lies beside the route, not on it.
+            # Slope, terrain and power are still judged on the coarse cell.
+            opened = self._open_route_cells(route)
+            try:
+                report = evaluate_route(self.evaluator, route, start_time_s=0.0, maps=self.maps,
+                                        coverage=self.coverage)
+            finally:
+                for r, c in opened:
+                    self.evaluator._walkable[r][c] = False
         except MarsEvaError as error:
             return {"status": "UNKNOWN", "message": str(error), "warnings": []}
         summary = route_report_summary(report)
@@ -148,6 +161,25 @@ class PlanChecker:
             "grid_cell_m": self.terrain.cell_size_m,
         }
         return out
+
+
+def _route_cells(terrain: Any, points_m: Any) -> list[tuple[int, int]]:
+    from ..providers.route_adapter import rasterize_route
+    return rasterize_route(terrain, points_m)
+
+
+def _open_cells(evaluator: EdgeEvaluator, cells) -> list[tuple[int, int]]:
+    """Mark cells walkable for one evaluation; returns the ones that were changed."""
+    # The coarse cell's own slope is not a reason to refuse it either: beside a cliff the
+    # merged cell is steep on average while the route keeps to its level part. The climb
+    # between cells is still judged on the coarse elevations.
+    changed = []
+    terrain = evaluator.terrain
+    for r, c in set(cells):
+        if not evaluator._walkable[r][c] and not bool(terrain.forbidden[r, c]):
+            evaluator._walkable[r][c] = True
+            changed.append((r, c))
+    return changed
 
 
 def _rounded(value: float, digits: int) -> float | None:

@@ -26,7 +26,9 @@ plan.physiology and written to the JSON.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -46,6 +48,7 @@ from mars_eva_sim.src.integration.router_bridge import PlanChecker, sol_assessme
 from .astronaut_router import EvaRouter, MissionPlan, ShelterRoute
 from .astronaut_terrain import build_astronaut_terrain, uniform_dose_rate_msv_h
 from .biomechanics import SuitParams
+from .dust_devils import DevilHazard
 from .environment import Environment
 from .rover import RoverParams, build_rover_terrain, regeneration_gain
 from .site import TERRAIN_CLASSES, Site, resolve_path
@@ -65,6 +68,8 @@ class EvaConditions:
     ground_temp_c: np.ndarray | None       # degrees C, site.shape
     radiation_source: str                  # "environment" (map) or "series" (uniform)
     sun_w_m2: np.ndarray | None = None     # direct sunlight on the ground at ltst_h, W/m^2
+    start_h: float | None = None           # local solar hour the EVA starts
+    start_reason: str = ""                 # why that hour
 
     def summary(self) -> dict:
         def stats(a, digits):
@@ -76,6 +81,7 @@ class EvaConditions:
             "ls_deg": None if self.ls_deg is None else round(self.ls_deg, 1),
             "particle_event": self.particle_event, "dust_tau": self.dust_tau,
             "radiation_source": self.radiation_source,
+            "start_h": self.start_h, "start_reason": self.start_reason,
             "dose_rate_usv_h": stats(self.dose_rate_msv_h * 1000.0, 2),
             "ground_temp_c": None if self.ground_temp_c is None else stats(self.ground_temp_c, 1),
             "direct_sun_w_m2": None if self.sun_w_m2 is None else stats(self.sun_w_m2, 0),
@@ -193,16 +199,91 @@ class EvaPlanSet:
         return out
 
 
+_STATUS_RANK = {"OK": 0, "MARGINAL": 1, "UNKNOWN": 2, "FAIL": 3}
+_BLOCKED_STEP = re.compile(r"step into \((\d+), (\d+)\)")
+
+
+def _repair(plan: MissionPlan, name: str, site: Site, suit: SuitParams, conditions: EvaConditions,
+            devils, start_h: float, checker, check_radio: bool, rounds: int = 4) -> MissionPlan:
+    """Close the cells where the astronaut simulator got stuck and plan again.
+
+    Each round closes the cell the latest attempt got stuck in (closures add up), and the
+    best attempt by the simulator's verdict is kept.
+    """
+    best, current, closed, seen = plan, plan, [], set()
+    cell = float(checker.terrain.cell_size_m)
+    for _ in range(rounds):
+        status = current.physiology.get("status")
+        msg = current.physiology.get("message", "")
+        m = _BLOCKED_STEP.search(msg)
+        if status != "FAIL" or not m or (int(m[1]), int(m[2])) in seen:
+            break
+        late = re.search(r"after ([\d.]+) km", msg)
+        if " W " in msg and late and float(late[1]) > 0.6 * current.total_distance_km:
+            break                       # a tired crew member late in the walk: shorten it instead (below)
+        r, c = int(m[1]), int(m[2])
+        seen.add((r, c))
+        closed.append([(c * cell, r * cell), ((c + 1) * cell, r * cell),
+                       ((c + 1) * cell, (r + 1) * cell), (c * cell, (r + 1) * cell)])
+        trial_site = copy.copy(site)
+        trial_site.no_go = list(site.no_go) + closed
+        terrain = build_astronaut_terrain(trial_site, suit=suit, dose_rate_msv_h=conditions.dose_rate_msv_h,
+                                          ground_temp_c=conditions.ground_temp_c)
+        router = EvaRouter(trial_site, terrain, suit, devils=devils, start_h=start_h)
+        try:
+            trial = router.plan(name, check_radio=check_radio)
+        except RuntimeError:
+            break
+        trial.physiology = checker.check(trial)
+        if _STATUS_RANK.get(trial.physiology.get("status"), 3) < _STATUS_RANK.get(best.physiology.get("status"), 3):
+            trial.warnings.append(f"Rerouted around {len(closed)} spot(s) the astronaut simulator "
+                                  "could not walk (steep for a tired crew member, or too narrow).")
+            best = trial
+        current = trial
+
+    # Still failing on power: the walk is too long for the crew member, not one bad climb.
+    # Drop the least valuable stop (lowest priority, then lowest science) and plan again.
+    targets = list(site.targets)
+    for _ in range(2):
+        msg = best.physiology.get("message", "")
+        if best.physiology.get("status") != "FAIL" or " W " not in msg or len(best.visited_targets) < 2:
+            break
+        visited = [t for t in targets if t.name in best.visited_targets]
+        sci = site.layers["science_score"]
+        drop = max(visited, key=lambda t: (t.priority, -float(sci[site.to_pixel(t.x_m, t.y_m)])))
+        if drop.priority == 1:
+            break                                       # never drop a must-visit stop
+        targets = [t for t in targets if t is not drop]
+        terrain = build_astronaut_terrain(site, suit=suit, dose_rate_msv_h=conditions.dose_rate_msv_h,
+                                          ground_temp_c=conditions.ground_temp_c)
+        router = EvaRouter(site, terrain, suit, devils=devils, start_h=start_h)
+        try:
+            trial = router.plan(name, targets=targets, check_radio=check_radio)
+        except RuntimeError:
+            break
+        trial.physiology = checker.check(trial)
+        if _STATUS_RANK.get(trial.physiology.get("status"), 3) < _STATUS_RANK.get(best.physiology.get("status"), 3):
+            trial.warnings.append(f"Left out {drop.name}: with it the walk is too long for the crew "
+                                  "member (the astronaut simulator fails a climb late in the EVA).")
+            best = trial
+    return best
+
+
 def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
               env: Environment | None = None, use_environment: bool = True,
               suit: SuitParams | None = None, strategies: list[str] | None = None,
               check_radio: bool = True, shelters: bool = False,
-              check_physiology: bool = True, vehicle: str = "astronaut",
+              check_physiology: bool = True, start_h: float | None = None,
+              dust_devils: bool = True, vehicle: str = "astronaut",
               rover: RoverParams | None = None) -> EvaPlanSet:
     """Plan the EVA of a site for one sol.
 
     sol       -- a sol of site.series (default: the first one).
     ltst_h    -- local true solar time of the ground-temperature map, about mid-EVA.
+    start_h   -- local solar hour the EVA starts. None: chosen to keep dust devil encounters
+                 low (a first plan is timed at every start; among the starts within 10 % of
+                 the lowest risk, the one nearest 09:30 wins). Without a forecast: ltst_h - 1.
+    dust_devils -- route around dust devil risk when the site has a forecast.
     env       -- a prepared Environment, to reuse it between runs (it takes seconds to build).
     use_environment=False -- skip the terrain-following maps: uniform radiation, no temperature.
     shelters  -- also precompute an escape route from every stop of every plan.
@@ -234,8 +315,47 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
     timings["terrain"] = clock() - t
 
     t = clock()
-    router = EvaRouter(site, terrain, suit)
+    devils = DevilHazard.for_site(site, env, conditions.sol) if (dust_devils and env is not None) else None
+    router = EvaRouter(site, terrain, suit, devils=devils,
+                       start_h=start_h if start_h is not None else max(0.0, ltst_h - 1.0))
     timings["router"] = clock() - t
+
+    def checker_at(hour: float) -> PlanChecker:
+        return PlanChecker(
+            site, ground_model=terrain, environment_model=env, sol=conditions.sol,
+            start_ltst_h=hour, astronaut=suit.astronaut(), suit=suit.suit(),
+            time_on_surface_s=suit.sols_on_surface * SOL_S, config=suit.config)
+
+    conditions.start_h, conditions.start_reason = router.start_h, "given" if start_h is not None else "default"
+    if start_h is None and devils is not None:
+        # When to go out. A first plan is timed at every start hour; starts are ranked by
+        # dust devil risk (within 10 % counts as equal, then nearer 09:30 is better), and the
+        # first one the astronaut simulator does not fail is taken (the heat of the day
+        # changes how hard the same climb is).
+        t = clock()
+        default_h = router.start_h
+        probe = router.plan("science", check_radio=False)
+        by = [(float(h), float(e)) for h, e in probe.dust_devils.get("by_start") or []]
+        if by:
+            low = max(min(e for _, e in by), 1e-6)
+            ranked = sorted(by, key=lambda he: (round(he[1] / low, 1), abs(he[0] - 9.5)))
+            chosen = None
+            for h, e in ranked[:5]:
+                # a single climb the simulator cannot walk is repaired later (see _repair);
+                # any other failure (heat, oxygen, water) rules the start hour out
+                verdict = checker_at(h).check(probe) if check_physiology else {}
+                if verdict.get("status") != "FAIL" or _BLOCKED_STEP.search(verdict.get("message", "")):
+                    chosen = (h, e)
+                    break
+            at_default = probe.dust_devils["expected"]
+            if chosen is None:
+                conditions.start_reason = "default: every low-risk start fails the physiology check"
+            else:
+                router.start_h = chosen[0]
+                conditions.start_reason = (f"dust devils: {chosen[1]:.3f} expected encounters "
+                                           f"against {at_default:.3f} at {default_h:.1f} h")
+            conditions.start_h = router.start_h
+        timings["start_time"] = clock() - t
 
     plans: dict[str, MissionPlan] = {}
     for name in strategies or list(router.mover.strategies):
@@ -251,13 +371,19 @@ def plan_site(site: Site, sol: int | None = None, ltst_h: float = 11.0,
                         sol_assessment=sol_assessment(site, conditions.sol, suit.config))
     if check_physiology:
         t = clock()
-        checker = PlanChecker(
-            site, ground_model=terrain, environment_model=env, sol=conditions.sol,
-            start_ltst_h=max(0.0, ltst_h - 1.0), astronaut=suit.astronaut(), suit=suit.suit(),
-            time_on_surface_s=suit.sols_on_surface * SOL_S, config=suit.config)
+        checker = checker_at(router.start_h)
         for plan in plans.values():
             plan.physiology = checker.check(plan)
         timings["physiology"] = clock() - t
+        # Plan, check, repair. The simulator walks the plan on its own coarser grid with
+        # fatigue and heat building up; where it finds a climb the crew member cannot hold,
+        # that cell is closed and the plan is made again (twice at most). A repaired plan
+        # replaces the first one only if the simulator likes it better.
+        t = clock()
+        for name in list(plans):
+            plans[name] = _repair(plans[name], name, site, suit, conditions, devils, router.start_h,
+                                  checker, check_radio)
+        timings["physiology_repair"] = clock() - t
     if shelters:
         t = clock()
         for name, plan in plans.items():
@@ -482,6 +608,9 @@ def main() -> None:
                     help="uniform radiation, no temperature (faster start)")
     ap.add_argument("--shelters", action="store_true", help="precompute escape routes from every stop")
     ap.add_argument("--out", default=None, help="output folder (default: the site folder)")
+    ap.add_argument("--start", type=float, default=None,
+                    help="local solar hour the EVA starts (default: chosen for low dust devil risk)")
+    ap.add_argument("--no-dust-devils", action="store_true", help="ignore the dust devil forecast")
     ap.add_argument("--vehicle", choices=("astronaut", "rover"), default="astronaut",
                     help="who travels: an astronaut on foot or a rover")
     ap.add_argument("--no-regen", action="store_true",
@@ -507,7 +636,8 @@ def main() -> None:
         return
 
     result = plan_site(site, sol=args.sol, ltst_h=args.ltst,
-                       use_environment=not args.no_environment, shelters=args.shelters)
+                       use_environment=not args.no_environment, shelters=args.shelters,
+                       start_h=args.start, dust_devils=not args.no_dust_devils)
     print_report(result)
 
     far = max(site.targets, key=lambda t: np.hypot(t.x_m - site.start[0], t.y_m - site.start[1]),

@@ -29,6 +29,8 @@ def plans_view(doc: dict, radiation_measured: bool | None = None) -> dict | None
         if phys.get("status") and phys["status"] != "OK":
             notes.append(f"Physiology check {phys['status']}: {phys.get('message', '')}".strip())
         notes += [str(w) for w in phys.get("warnings", []) if w]
+        notes += [str(w) for w in p.get("warnings", []) if str(w).startswith("Rerouted")]
+        dd = p.get("dust_devils") or {}
         items.append({
             "id": key, "title": p.get("title", key), "feasible": bool(p.get("feasible")),
             "physiology": phys.get("status"),
@@ -40,6 +42,9 @@ def plans_view(doc: dict, radiation_measured: bool | None = None) -> dict | None
                        "x": st.get("x_m"), "y": st.get("y_m"),
                        "arrive": st.get("arrive_min"), "depart": st.get("depart_min"),
                        "dwell": st.get("dwell_min")} for st in p.get("stops", [])],
+            # expected dust devil encounters, the chance of one, and the walk at other start hours
+            "devils": {k: dd[k] for k in ("expected", "probability", "best_start_h", "by_start", "start_h")
+                       if k in dd} or None,
         })
     if not items:
         return None
@@ -48,6 +53,7 @@ def plans_view(doc: dict, radiation_measured: bool | None = None) -> dict | None
            "particleEvent": bool(cond.get("particle_event")),
            "doseRate": rate.get("median"), "groundTemp": temp.get("median"),
            "vehicle": doc.get("vehicle", "astronaut"),
+           "startH": cond.get("start_h"), "startReason": cond.get("start_reason", ""),
            "items": items}
     if radiation_measured is not None:
         # Without a radiation series the planner falls back to a typical Gale dose.
