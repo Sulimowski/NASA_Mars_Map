@@ -124,6 +124,41 @@ to about 100 x 100 cells) and stores the verdict in `plan.physiology`:
 `conditions.sol_assessment` says whether the sol is fit for an EVA (no particle event
 within one sol, daylight window) and which sol of the series is best.
 
+**Plan, check, repair.** Where the simulator gets stuck on one climb, that cell is closed
+and the plan is made again (closures add up, four rounds at most). When it fails on power
+late in the walk (a tired crew member, not one bad spot), the least valuable optional stop
+is left out instead. A repaired plan replaces the first one only if the simulator likes it
+better, and says so in `warnings`. Coarse cells the route passes through count as
+passable in the simulator: the planner walked them on the fine grid.
+
+The router only plans steps that fit under `SuitParams.power_margin` (0.94) of the
+sustainable power; the pace still uses the full power. Fatigue and heat lower the limit
+during the walk, and without the margin a climb accepted at the start fails two hours later.
+
+## Dust devils
+
+With a forecast (`hazards/data/<site>_dust_devils.csv`, from `python -m hazards.train_dust_devils`)
+the walk has a clock (`mars_map/dust_devils.py`):
+
+- **Risk map.** `rate(x, h) = lambda(h) * S(x)`: the forecast rate of vortices passing one
+  point at local hour h, times a susceptibility S (mean 1) from heating (sunlight over the
+  square root of thermal inertia), level ground and loose sand. S ranks places; it is not
+  fitted to vortex tracks.
+- **Routing.** Every leg is routed with the rate of the hour it is expected to be walked;
+  each expected encounter costs `Strategy.devil_weight` seconds of walking (2400 s,
+  4800 s for the radiation-shelter plan). The target order is scored with the expected
+  encounters of the whole tour, legs and stops each at their own hour.
+- **When to go out.** `plan_site(start_h=None)` times a first plan at every start between
+  07:00 and 16:30 (minus its length), ranks the starts by risk (within 10 % counts as equal,
+  then nearer 09:30), and takes the first the simulator does not fail. `--start 9` fixes it.
+- **Report.** `plan.dust_devils`: `expected` encounters, `probability` of at least one,
+  `by_start` (the same walk at other start hours), `best_start_h`.
+- **During the walk** (`scripts/serve.py`, `/api/reroute`): the router of the plan is kept in
+  memory and a vortex corridor (a cone that widens with the prediction) is closed for the
+  new searches only (`EvaRouter.leg_avoiding`), about 1 s. The page waits when the vortex
+  clears sooner than a detour would cost (real drift ~6 m/s against the plan's walking
+  speed) and never drops a stop to save a short wait.
+
 ## Emergency: solar particle event
 
 `result.shelter((x_m, y_m))` or `find_nearest_shelter(site, (x_m, y_m), dose_rate_map)` returns

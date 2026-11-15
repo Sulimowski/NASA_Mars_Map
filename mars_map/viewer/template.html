@@ -598,6 +598,7 @@ function readout() {
   if (probes.reachable && !val('reachable')) out.push('<b class="bad">cut off from base</b>');
   if (probes.sand_fraction && val('sand_fraction') > .05) out.push(`sand ${fmt(val('sand_fraction') * 100, 0)} %`);
   if (probes.dose_rate) out.push(`${fmt(val('dose_rate'), 1)} µSv/h`);
+  if (probes.devil_s) out.push(`devils ×${fmt(val('devil_s'), 1)}`);
   if (probes.thermal_inertia) out.push(`TI ${fmt(val('thermal_inertia'), 0)}`);
   if (probes.mineral_dominant && val('mineral_dominant')) out.push((D.mineralNames[val('mineral_dominant')] || '').replace(/\s*\(.*\)/, ''));
   $('sbpos').innerHTML = out.join('<i>·</i>');
@@ -733,12 +734,14 @@ function showPlan() {
   const s = PLAN.summary, m = D.mission, P = D.plans; $('planBox').style.display = '';
   const cell = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`;
   // With several plans: one row each to compare and pick, like the list of stops.
-  const rows = PLANS.length > 1 ? `<table class="plans"><tr><th>Plan</th><th>Time</th><th>O₂ left</th><th>Dose</th></tr>${PLANS.map(p =>
+  const dd = PLANS.some(p => p.devils);           // dust devil chance per plan, when planned with the forecast
+  const rows = PLANS.length > 1 ? `<table class="plans"><tr><th>Plan</th><th>Time</th><th>O₂ left</th><th>Dose</th>${dd ? '<th title="Chance of meeting a dust devil on the walk">Devils</th>' : ''}</tr>${PLANS.map(p =>
     `<tr class="row${p === PLAN ? ' on' : ''}" data-p="${p.id}"><td><i class="${planOk(p) ? '' : 'bad'}"></i>${PLAN_NAMES[p.id] || p.title}</td>
-     <td>${fmt(p.summary.total_time_hours, 1)} h</td><td>${fmt(p.summary.o2_remaining_pct, 0)} %</td><td>${fmt(p.summary.total_dose_msv, 3)}</td></tr>`).join('')}</table>` : '';
+     <td>${fmt(p.summary.total_time_hours, 1)} h</td><td>${fmt(p.summary.o2_remaining_pct, 0)} %</td><td>${fmt(p.summary.total_dose_msv, 3)}</td>${dd ? `<td>${p.devils ? fmt(p.devils.probability * 100, 0) + ' %' : '–'}</td>` : ''}</tr>`).join('')}</table>` : '';
   // one line of numbers for the chosen route, its status, the trip control (reqvi: the
   // astronaut walks the route once and waits at the base), and the planner's warnings
-  const when = P ? `sol ${P.sol} · ${fmt(P.ltst, 0)} h${P.particleEvent ? ' · solar particle event' : ''}` : '';
+  const start = P && P.startH != null ? `<span title="${(P.startReason || '').replace(/"/g, '')}">start ${clock(P.startH)}</span>` : (P ? fmt(P.ltst, 0) + ' h' : '');
+  const when = P ? `sol ${P.sol} · ${start}${P.particleEvent ? ' · solar particle event' : ''}` : '';
   $('plan').innerHTML = `${rows}<p class="status ${planOk(PLAN) ? '' : 'bad'}" title="Limits: ${m.evaHours} h, ${m.maxKm} km, ${m.maxDose} mSv"><i></i>${planOk(PLAN) ? 'Within limits' : 'Exceeds limits'}</p>
     <p class="facts">${fmt(s.total_distance_km, 2)} km · +${fmt(s.total_elevation_gain_m, 0)} m · battery ${fmt(s.battery_remaining_pct, 0)} %${when ? ' · ' + when : ''}</p>
     <div class="trip"><button id="tripBtn" type="button"></button><span id="tripState"></span></div>
@@ -755,6 +758,7 @@ function startTrip() {
   if (!PLAN) return;
   const detour = walk.detour;
   Object.assign(walk, {u: 0, done: false, paused: false, hold: false, detour: null, names: null});
+  if (typeof dv !== 'undefined') dv.follow = true;                     // the map clock follows the walk again
   if (detour) { layout(); if (routeCurve) walk.base = routeCurve.getLength(); }   // back to the planned route
   clearZone(); drawTrip();
 }
@@ -769,8 +773,11 @@ function drawTrip() {
   if (key === walk.shown) return;                  // called every frame: touch the page only on change
   walk.shown = key;
   b.textContent = walk.done ? 'Go again' : walk.paused ? 'Resume' : 'Pause';
+  // local time on the walk, when the plan knows its start hour
+  const P = D.plans, at = P && P.startH != null && PLAN && PLAN.summary
+    ? ' · ' + clock((P.startH + Math.min(walk.u, 1) * PLAN.summary.total_time_hours / 1.0275) % 24) : '';
   $('tripState').textContent = walk.done ? 'Back at base'
-    : walk.paused ? `Paused · ${pct} %` : walk.hold ? `Waiting · ${pct} %` : `Walking · ${pct} %`;
+    : walk.paused ? `Paused · ${pct} %${at}` : walk.hold ? `Waiting · ${pct} %${at}` : `Walking · ${pct} %${at}`;
 }
 // ---------- plan your own walk: place a base and points, ask the planner for the routes ----------
 // Needs the app server (scripts/serve.py): it runs the Python planner. Opened any other way
@@ -878,7 +885,7 @@ showPlan();
 // three times wider than real so they can be seen at this scale.
 const DV = D.devils;
 const DV_NP = 4400, DV_SHADOW = 36, DV_MAX = 14, SOL_H = 1.0275;     // particles per vortex, vortices at once, Earth h per Mars h
-const dv = {season: 0, hour: 11.5, play: false, last: 0, shown: ''};
+const dv = {season: 0, hour: 11.5, play: false, last: 0, shown: '', follow: true};   // follow: time = walk clock
 const devils = [];
 let devilGeo = null;
 if (DV) {
@@ -890,8 +897,8 @@ if (DV) {
   $('dvs').innerHTML = DV.seasons.map((s, i) => `<option value="${i}">Ls ${s}–${s + 30}${s >= 180 && s < 330 ? ', dusty season' : ''}${DV.lsNow != null && i === dv.season ? ' (now)' : ''}</option>`).join('');
   $('dvs').value = dv.season;
   $('dvs').onchange = () => { dv.season = +$('dvs').value; dv.wind = Math.random() * Math.PI * 2; dv.shown = ''; drawDevilPanel(); };
-  $('dvh').oninput = () => { dv.hour = +$('dvh').value; dv.play = false; $('dvp').textContent = 'Play'; drawDevilPanel(); };
-  $('dvp').onclick = () => { dv.play = !dv.play; $('dvp').textContent = dv.play ? 'Pause' : 'Play'; };
+  $('dvh').oninput = () => { dv.hour = +$('dvh').value; dv.play = false; dv.follow = false; $('dvp').textContent = 'Play'; drawDevilPanel(); };
+  $('dvp').onclick = () => { dv.play = !dv.play; dv.follow = false; $('dvp').textContent = dv.play ? 'Pause' : 'Play'; };
 
   // One shared particle pattern; each vortex turns and lifts it with its own phase.
   // Kinds: 0 = spiral arm (the streaks that show the turning), 1 = diffuse core, 2 = skirt of dust at the foot.
@@ -1033,9 +1040,21 @@ function drawDevilPaths(dt) {
   for (const k of ['position', 'along', 'fade', 'side']) pathGeo.attributes[k].needsUpdate = true;
 }
 
+// Birth places follow the planner's dust devil risk map: a candidate spot is kept with a
+// chance in proportion to its risk, so vortices rise where the planner expects them.
+function devilSpot(m) {
+  const p = probes.devil_s;
+  for (let k = 0; k < 40; k++) {
+    const x = m + Math.random() * (W - 2 * m), y = m + Math.random() * (H - 2 * m);
+    if (!p) return [x, y];
+    const c = Math.round(x / W * (cols - 1)), r = Math.round(y / H * (rows - 1)), v = p.a[r * cols + c];
+    if (v !== 255 && Math.random() < v * p.scale / 2.5) return [x, y];
+  }
+  return [m + Math.random() * (W - 2 * m), m + Math.random() * (H - 2 * m)];
+}
 function spawnDevil() {
-  const m = 120, s = 22 + Math.random() * 18, w = dv.wind + (Math.random() - .5) * .9;
-  devils.push({x: m + Math.random() * (W - 2 * m), y: m + Math.random() * (H - 2 * m), vx: Math.cos(w) * s, vy: Math.sin(w) * s,
+  const m = 120, s = 22 + Math.random() * 18, w = dv.wind + (Math.random() - .5) * .9, [sx, sy] = devilSpot(m);
+  devils.push({x: sx, y: sy, vx: Math.cos(w) * s, vy: Math.sin(w) * s,
     age: 0, life: 8 + Math.random() * 6, hgt: 280 + Math.random() * 320, r0: 18 + Math.random() * 14,
     spin: 2.2 + Math.random() * 1.6, phase: Math.random() * 100});
 }
@@ -1208,7 +1227,7 @@ const LEVELS = [
   {id: 'air', name: 'Atmosphere', at: 'to ~40 km', fog: 1, series: 'air',
    facts: () => S_.pressure_pa || S_.temp_max_c ? (S_.sol && S_.sol.length ? `sols ${S_.sol[0]}–${S_.sol[S_.sol.length - 1]}` : '') : 'no data',
    hint: 'Rover weather (REMS) per sol: pressure, air minimum and maximum.'},
-  DV && {id: 'devils', name: 'Dust devils', at: 'to ~1 km', devils: 3, paths: true,
+  DV && {id: 'devils', name: 'Dust devils', at: 'to ~1 km', devils: 3, paths: true, layer: has('devil_risk') ? 'devil_risk' : null,
    facts: () => `${fmt(devilRate(dv.hour), 2)} per hour at ${clock(dv.hour)} · drawn ×3 · ribbons = tracks`,
    hint: 'Forecast from the hazards model (right panel). Ribbons: each vortex track over its remaining life.'},
   SAND && {id: 'near', name: 'Blowing sand', at: '0–2 m', layer: 'sand_fraction', veil: 1.8, series: 'near',
@@ -1287,7 +1306,18 @@ const v = new THREE.Vector3(); t0 = performance.now();
 const DV_KEEP = 60,           // m: closer than this to the vortex's track is a threat
       DV_MARGIN = 15,         // m: the new route stays this much further out
       DV_AHEAD = 350,         // m of route ahead that is watched
-      DV_NEAR = 450;          // m: a vortex further than this from the astronaut is ignored
+      DV_NEAR = 450,          // m: a vortex further than this from the astronaut is ignored
+      DV_SPREAD = 5,          // m per screen second: a vortex wanders, so its corridor widens the further ahead
+      DV_DRIFT = 6,           // m/s: real drift speed of a Martian dust devil (wind at a few metres height)
+      DV_MAX_WAIT = 600;      // s: longer than this in the way, a detour may drop stops
+// Where the vortex may be: a corridor from where it is to where it dies out, widening from
+// DV_KEEP + DV_MARGIN by DV_SPREAD per second of the prediction (a cone, not a line).
+function segDistT(px, py, z) {                     // distance to the track, and where along it (0..1)
+  const dx = z.x2 - z.x1, dy = z.y2 - z.y1, q = dx * dx + dy * dy;
+  const t = q ? Math.max(0, Math.min(1, ((px - z.x1) * dx + (py - z.y1) * dy) / q)) : 0;
+  return [Math.hypot(px - z.x1 - t * dx, py - z.y1 - t * dy), t];
+}
+const coneR = (z, t) => z.r + (z.r2 - z.r) * t;    // half-width of the cone at a point along it
 function routePoints() { return walk.detour && walk.plan === PLAN ? walk.detour : (PLAN && PLAN.points); }
 function pathLen(pts) { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return L; }
 function segDist(px, py, z) {                      // distance from a point to the vortex's track
@@ -1311,8 +1341,8 @@ function say(msg, bad) { const e = $('dvlog'); e.textContent = msg; e.className 
 function clearZone() { if (walk.zone) { overlay.remove(walk.zone); walk.zone.geometry.dispose(); walk.zone = null; } }
 function showZone(z, now, life) {                  // outline of the corridor the route must keep out of
   clearZone();
-  const r = z.r, a = Math.atan2(z.y2 - z.y1, z.x2 - z.x1), pts = [];
-  for (const [cx, cy, a0] of [[z.x2, z.y2, a - Math.PI / 2], [z.x1, z.y1, a + Math.PI / 2]])
+  const a = Math.atan2(z.y2 - z.y1, z.x2 - z.x1), pts = [];
+  for (const [cx, cy, r, a0] of [[z.x2, z.y2, z.r2 || z.r, a - Math.PI / 2], [z.x1, z.y1, z.r, a + Math.PI / 2]])
     for (let k = 0; k <= 10; k++) { const t = a0 + Math.PI * k / 10; pts.push([Math.max(3, Math.min(W - 3, cx + r * Math.cos(t))), Math.max(3, Math.min(H - 3, cy + r * Math.sin(t)))]); }
   pts.push(pts[0]);
   [walk.zone] = tube(pts, 1.8, 0xe0664a, 4); walk.zoneUntil = now + life * 1000;
@@ -1322,17 +1352,31 @@ function threat() {                                // the vortex that will cross
   const [wx, wy] = walkerXY(), L = Math.max(pathLen(pts), 1);
   for (const d of devils) {
     const rem = d.life - d.age; if (rem < 1) continue;
-    const z = {x1: d.x, y1: d.y, x2: d.x + d.vx * rem, y2: d.y + d.vy * rem, r: DV_KEEP + DV_MARGIN, rem};
-    const here = segDist(wx, wy, z);
+    const z = {x1: d.x, y1: d.y, x2: d.x + d.vx * rem, y2: d.y + d.vy * rem, r: DV_KEEP + DV_MARGIN,
+               r2: DV_KEEP + DV_MARGIN + Math.min(DV_SPREAD * rem, 45), rem, devil: d};
+    const [here, th] = segDistT(wx, wy, z);
     if (here > DV_NEAR) continue;
-    if (here < DV_KEEP) return Object.assign(z, {onMe: true});
+    if (here < DV_KEEP + (coneR(z, th) - z.r)) return Object.assign(z, {onMe: true});
     for (let k = 1; k <= 14; k++) {
       const uu = walk.u + k / 14 * DV_AHEAD / L; if (uu > 1) break;
-      const q = routeCurve.getPointAt(uu);
-      if (segDist(q.x + W / 2, q.z + H / 2, z) < DV_KEEP) return z;
+      const q = routeCurve.getPointAt(uu), [dd, tt] = segDistT(q.x + W / 2, q.z + H / 2, z);
+      if (dd < DV_KEEP + (coneR(z, tt) - z.r)) return z;
     }
   }
   return null;
+}
+// How long until the vortex is clear of the route ahead (screen seconds): it has passed its
+// closest approach to the next DV_AHEAD m and is further than the keep distance from them.
+function waitFor(z) {
+  const d = z.devil, pts = [], L = Math.max(pathLen(routePoints()), 1);
+  for (let k = 0; k <= 14; k++) { const uu = Math.min(1, walk.u + k / 14 * DV_AHEAD / L); const q = routeCurve.getPointAt(uu); pts.push([q.x + W / 2, q.z + H / 2]); }
+  let tClose = 0, best = Infinity;
+  for (let t = 0; t <= z.rem; t += .25) {
+    const x = d.x + d.vx * t, y = d.y + d.vy * t, m = Math.min(...pts.map(p => Math.hypot(p[0] - x, p[1] - y)));
+    if (m < best) { best = m; tClose = t; }
+    if (t > tClose && m > DV_KEEP + DV_MARGIN + DV_SPREAD * t * .5) return t;
+  }
+  return z.rem;                                    // it dies out before it is clear
 }
 async function avoidDevil(z, now) {
   walk.hold = true;
@@ -1340,26 +1384,44 @@ async function avoidDevil(z, now) {
   showZone(z, now, z.rem);
   if (!live) return say('A dust devil is about to cross the route. Holding position until it has passed. (Rerouting needs the app server, scripts\\serve.py.)', true);
   walk.pending = true;
-  say('A dust devil is about to cross the route. Holding position and asking the planner for a way around…', true);
+  say('Dust devil ahead: holding, weighing a wait against a detour…', true);
   const pts = routePoints(), [wx, wy] = walkerXY(), plan = PLAN;
   const via = stopsAhead(pts, walk.u, walk.detour ? walk.names : PLAN.targets);
   const left = (1 - walk.u) * pathLen(pts);
+  // The screen runs the walk and the vortices at different speeds, so the choice is made in
+  // real units: the vortex has to drift `clear` metres (real drift ~DV_DRIFT m/s) before the
+  // way is open; a detour costs its extra metres at the plan's real walking speed.
+  const d = z.devil, clear = waitFor(z) * Math.hypot(d.vx, d.vy);
+  const waitS = clear / DV_DRIFT;
+  const walkMS = PLAN.summary.total_distance_km * 1000 / Math.max(PLAN.summary.total_time_hours * 3600, 1);
   try {
     const r = await fetch('/api/reroute', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({site: D.name, sol: D.plans ? D.plans.sol : null, strategy: PLAN.id === 'route' ? 'science' : PLAN.id,
         from: [wx, wy], via: via.map(({name, x, y}) => ({name, x, y})), base: [stops[0].x, stops[0].y],
-        avoid: [{x1: z.x1, y1: z.y1, x2: z.x2, y2: z.y2, r: z.r}]})});
+        start_h: D.plans ? D.plans.startH : null, elapsed_s: walk.u * (PLAN.summary.total_time_hours || 0) * 3600,
+        avoid: [{x1: z.x1, y1: z.y1, x2: z.x2, y2: z.y2, r: z.r, r2: z.r2}]})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('server answered ' + r.status));
     if (plan !== PLAN) throw new Error('the plan was changed meanwhile');
-    walk.detour = j.points; walk.names = via.map(v => v.name).filter(n => !j.dropped.includes(n));
-    walk.u = 0; walk.hold = false; walk.reroutes++; layout();
-    const extra = Math.round(j.distance_m - left);
-    say(`Rerouted around a dust devil in ${j.seconds} s: ${fmt(j.distance_m / 1000, 2)} km left, ${extra >= 0 ? '+' : '−'}${Math.abs(extra)} m against the plan.` +
-        (j.dropped.length ? ` Cut off and left out: ${j.dropped.join(', ')}.` : ''));
-  } catch (e) { say(`No way around the dust devil (${e.message}). Holding position until it has passed.`, true); }
+    // Wait or go round, whichever loses less time. A detour that drops a stop is taken only
+    // when waiting is not an option (the vortex would sit on the route for over DV_MAX_WAIT s).
+    const detourS = Math.max(0, (j.distance_m - left) / walkMS);
+    const goRound = j.dropped.length ? waitS > DV_MAX_WAIT : detourS < waitS;
+    const t = s => s < 90 ? fmt(s, 0) + ' s' : fmt(s / 60, 0) + ' min';
+    if (!goRound) {
+      say(`Waiting ~${t(waitS)} for the dust devil to pass; going round would cost +${t(detourS)}` +
+          (j.dropped.length ? ` and drop ${j.dropped.length} stop${j.dropped.length > 1 ? 's' : ''}` : '') + '.');
+    } else {
+      walk.detour = j.points; walk.names = via.map(v => v.name).filter(n => !j.dropped.includes(n));
+      walk.u = 0; walk.hold = false; walk.reroutes++; layout();
+      say(`Going round: +${t(detourS)} instead of waiting ~${t(waitS)}` +
+          (j.devils_expected != null ? `; dust devil chance on the rest ${fmt(DevilP(j.devils_expected) * 100, 0)} %` : '') +
+          (j.dropped.length ? `. Cut off: ${j.dropped.join(', ')}.` : '.'));
+    }
+  } catch (e) { say(`No way around (${e.message}). Waiting ~${fmt(waitS, 0)} s for it to pass.`, true); }
   walk.pending = false; walk.cool = performance.now() + 2500;
 }
+const DevilP = e => 1 - Math.exp(-Math.max(e || 0, 0));     // expected encounters -> chance of one
 function devilAcrossRoute() {                      // a vortex aimed across the route ahead of the astronaut
   if (!DV || !routeCurve) return;
   const L = Math.max(pathLen(routePoints()), 1), uu = Math.min(.98, walk.u + 220 / L);
@@ -1384,6 +1446,12 @@ function stepWalk(now) {
     const z = threat();
     if (walk.hold) { if (!z) { walk.hold = false; say('The dust devil has passed. Walking on.'); } }
     else if (z && now > walk.cool) avoidDevil(z, now);
+  }
+  // The clock of the map follows the walk (sun, shadows, how many vortices rise), so the
+  // vortices on screen come at the rate the planner counted; touching the time slider stops it.
+  if (DV && dv.follow && D.plans && D.plans.startH != null && PLAN && PLAN.summary && moving) {
+    dv.hour = (D.plans.startH + Math.min(walk.u, 1) * PLAN.summary.total_time_hours / 1.0275) % 24;
+    drawDevilPanel();
   }
   if (!walk.hold && moving) {
     walk.u += dt / (42000 * routeCurve.getLength() / walk.base);       // the same pace on any route

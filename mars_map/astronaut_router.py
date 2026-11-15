@@ -21,6 +21,12 @@ How a plan is made:
 5. Report. The smoothed route is walked sample by sample with the same physics
    the search used (biomechanics.locomotion).
 
+Dust devils (optional, `devils=DevilHazard`): the walk has a clock. Every leg is routed
+with the encounter rate of the hour the crew is expected to walk it, so a sandy flat that
+is fine at 08:00 is avoided at 12:00; the target order is scored with the expected
+encounters of the whole tour; the plan reports the expected encounters, the chance of
+meeting one, and the same walk started at other hours (see dust_devils.py).
+
 Units: metres, seconds inside; mSv and mSv/h for radiation; litres of O2; Wh.
 """
 
@@ -39,12 +45,14 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from mars_map.astronaut_terrain import AstronautTerrainModel, build_astronaut_terrain
+    from mars_map.dust_devils import MARS_HOUR_S, DevilHazard
     from mars_map.biomechanics import (EARTH_GRAVITY, MARS_GRAVITY, SuitParams, dwell,
                                        locomotion)
     from mars_map.radio import RadioParams, link_quality
     from mars_map.site import MissionParams, Site, Target
 else:
     from .astronaut_terrain import AstronautTerrainModel, build_astronaut_terrain
+    from .dust_devils import MARS_HOUR_S, DevilHazard
     from .biomechanics import EARTH_GRAVITY, MARS_GRAVITY, SuitParams, dwell, locomotion
     from .radio import RadioParams, link_quality
     from .site import MissionParams, Site, Target
@@ -83,25 +91,29 @@ class Strategy:
     saving: str = ""                # "", "o2" or "dose": the resource the plan saves
     saving_weight: float = 0.0      # value an optional target must bring per 100 % of it
     science_weight: float = 1.0     # weight of science_score next to the target priority
+    devil_weight: float = 2400.0    # seconds of walking one expected dust devil encounter is worth
+    devil_rate_s: float = 0.0       # site-wide encounter rate per second at the hour of a leg (set per leg)
 
     @property
     def routing(self) -> tuple:
         """The part that shapes a route; strategies equal here share searches and legs."""
         return (self.time_weight, self.o2_weight, self.looseness_weight, self.steep_weight,
-                self.nodata_weight, self.rad_power, self.rad_linear)
+                self.nodata_weight, self.rad_power, self.rad_linear,
+                round(self.devil_weight * self.devil_rate_s, 7))
 
 
 STRATEGIES: dict[str, Strategy] = {
     "shielded": Strategy("shielded", "Maximum radiation shelter", rad_power=4.0,
-                         budget_use=0.85, saving="dose", saving_weight=40.0),
+                         budget_use=0.85, saving="dose", saving_weight=40.0, devil_weight=4800.0),
     "eco": Strategy("eco", "Minimum oxygen and energy", time_weight=0.25, o2_weight=1.0,
                     looseness_weight=1.0, steep_weight=0.3, budget_use=0.85,
                     saving="o2", saving_weight=40.0),
     "science": Strategy("science", "Maximum science", science_weight=5.0),
 }
 # Leg costs for target choice are measured on the fastest sensible route.
-_NOMINAL = Strategy("nominal")
-_FASTEST = Strategy("fastest", looseness_weight=0.0, steep_weight=0.0, nodata_weight=0.0)
+_NOMINAL = Strategy("nominal", devil_weight=0.0)
+_FASTEST = Strategy("fastest", looseness_weight=0.0, steep_weight=0.0, nodata_weight=0.0,
+                    devil_weight=0.0)
 
 
 def priority_value(priority: int) -> float:
@@ -178,6 +190,8 @@ class MissionPlan:
     # Verdict of the sequential astronaut simulator on the finished plan (fatigue, heat,
     # water, return oxygen, emergency reach); filled by the pipeline.
     physiology: dict = field(default_factory=dict)
+    # Expected dust devil encounters of the walk, the chance of one, and other start hours.
+    dust_devils: dict = field(default_factory=dict)
     site: Site | None = field(default=None, repr=False, compare=False)
     suit: SuitParams | None = field(default=None, repr=False, compare=False)
 
@@ -261,6 +275,7 @@ class MissionPlan:
             "legs": [s.to_dict() for s in self.segments],
             "radio": {k: v for k, v in self.radio.items() if k != "samples"},
             "physiology": self.physiology,
+            "dust_devils": self.dust_devils,
             "waypoints": self.waypoints(waypoint_step_m),
             "compute_s": round(self.compute_s, 3),
         }
@@ -324,22 +339,27 @@ def _radio_at(samples: list[dict], dist_m: float) -> str:
 # ----------------------------------------------------------------------------
 class _Grid:
     """Rasters of one search grid (the whole site, a window of it, or the coarse copy)."""
-    __slots__ = ("elev", "eta", "speed", "loose", "pen", "rate", "heater", "imp", "res")
+    __slots__ = ("elev", "eta", "speed", "loose", "pen", "rate", "heater", "imp", "res", "devil")
 
-    def __init__(self, elev, eta, speed, loose, pen, rate, heater, imp, res):
+    def __init__(self, elev, eta, speed, loose, pen, rate, heater, imp, res, devil=None):
         self.elev, self.eta, self.speed, self.loose = elev, eta, speed, loose
         self.pen, self.rate, self.heater, self.imp, self.res = pen, rate, heater, imp, res
+        self.devil = np.zeros(elev.shape, np.float32) if devil is None else devil   # dust devil S map
 
     def window(self, r0, r1, c0, c1, extra_block=None) -> "_Grid":
         s = (slice(r0, r1), slice(c0, c1))
         imp = self.imp[s] if extra_block is None else self.imp[s] | extra_block
         return _Grid(self.elev[s], self.eta[s], self.speed[s], self.loose[s], self.pen[s],
-                     self.rate[s], self.heater[s], imp, self.res)
+                     self.rate[s], self.heater[s], imp, self.res, self.devil[s])
 
 
 def _generalized_cost(strat: Strategy, t, o2, loose, pen, rate, slope_abs_deg, rate_ref: float,
-                      mission: MissionParams):
-    """What the search minimises for one step; the single definition of route quality."""
+                      mission: MissionParams, devil=None):
+    """What the search minimises for one step; the single definition of route quality.
+
+    devil: dust devil susceptibility of the cell; with the strategy's rate of the hour it
+    adds devil_weight seconds per expected encounter.
+    """
     cost = strat.time_weight * t + strat.o2_weight * _O2_SECONDS_PER_LITRE * o2
     cost = cost * (1.0 + strat.looseness_weight * loose) * (1.0 + strat.nodata_weight * (pen - 1.0))
     over = np.maximum(slope_abs_deg - mission.max_slope_deg, 0.0)
@@ -348,6 +368,8 @@ def _generalized_cost(strat: Strategy, t, o2, loose, pen, rate, slope_abs_deg, r
         cost = cost * (rate / rate_ref) ** strat.rad_power
     if strat.rad_linear:
         cost = cost + strat.rad_linear * rate * t
+    if devil is not None and strat.devil_weight and strat.devil_rate_s:
+        cost = cost + strat.devil_weight * strat.devil_rate_s * devil * t
     return cost
 
 
@@ -376,7 +398,7 @@ def _edge_arrays(g: _Grid, strat: Strategy, mission: MissionParams, suit: SuitPa
             t, o2, wh = (np.where(stuck, 0.0, a) for a in (t, o2, wh))
         slope = np.degrees(np.arctan(np.abs(dh) / d))
         c = _generalized_cost(strat, t, o2, g.loose[dst], g.pen[dst], g.rate[dst], slope,
-                              rate_ref, mission)
+                              rate_ref, mission, g.devil[dst])
         bad = (slope > hard) | stuck
         if edge_blocked is not None:
             bad |= edge_blocked[k][src]
@@ -523,8 +545,11 @@ class EvaRouter:
                  suit: SuitParams | None = None, radio: RadioParams | None = None,
                  coarse_cells: int = 200, corridor_cells: int = 2,
                  heuristic_weight: float = 1.1, smooth_tolerance: float = 0.03,
-                 max_span_m: float = 300.0, coarse_margin: float = 1.05):
+                 max_span_m: float = 300.0, coarse_margin: float = 1.05,
+                 devils: DevilHazard | None = None, start_h: float = 10.0):
         self.site, self.mission = site, site.mission
+        self.devils = devils            # dust devil risk; None: not considered
+        self.start_h = start_h          # local solar hour the walk starts (with devils)
         self.suit = suit or SuitParams()
         self.radio_params = radio or RadioParams()
         self.terrain = terrain or build_astronaut_terrain(site, suit=self.suit)
@@ -538,12 +563,15 @@ class EvaRouter:
         self.res = float(site.resolution_m)
         self.max_span = max(2, int(max_span_m / self.res))
         elev = np.ascontiguousarray(site.layers["elevation"], dtype=np.float32)
+        s_map = (np.ascontiguousarray(devils.s_map, dtype=np.float32) if devils is not None
+                 else np.zeros(elev.shape, np.float32))
         self.fine = _Grid(elev, t.terramech_factor, t.speed_multiplier, t.looseness,
-                          t.nodata_penalty, t.dose_rate_msv_h, t.heater_w, t.impassable, self.res)
+                          t.nodata_penalty, t.dose_rate_msv_h, t.heater_w, t.impassable, self.res,
+                          s_map)
         self.rate_ref = float(np.median(t.dose_rate_msv_h))
         # Flat views for sampling routes.
         self._flat = {k: np.ascontiguousarray(getattr(self.fine, k)).ravel()
-                      for k in ("elev", "eta", "speed", "loose", "pen", "rate", "heater", "imp")}
+                      for k in ("elev", "eta", "speed", "loose", "pen", "rate", "heater", "imp", "devil")}
         self._sinkage_cm = (t.sinkage_cm if t.sinkage_cm is not None else t.sinkage * 5.0).ravel()
         self._tclass = site.layers["terrain_class"].ravel()
         self._temp = None if t.ground_temp_c is None else t.ground_temp_c.ravel()
@@ -598,7 +626,7 @@ class EvaRouter:
         self.coarse = _Grid(
             block(F.elev, "mean").astype(np.float32), block(F.eta, "mean"), block(F.speed, "mean"),
             block(F.loose, "mean"), block(F.pen, "mean"), block(F.rate, "mean"),
-            block(F.heater, "mean"), imp_c, self.res * f)
+            block(F.heater, "mean"), imp_c, self.res * f, block(F.devil, "mean").astype(np.float32))
         # Lowest dose rate on passable ground inside each coarse cell (shelter search).
         self._c_rate_min = block(np.where(imp, np.float32(np.inf), F.rate), "min")
         self._c_offsets = tuple(dr * Cc + dc for dr, dc in _DIRS)
@@ -678,6 +706,7 @@ class EvaRouter:
         places = [self._place(p) for p in points]
         n = len(points)
         M: list[list] = [[None] * n for _ in range(n)]
+        MS: list[list] = [[0.0] * n for _ in range(n)]     # dust devil S x seconds along each leg
         for i, (_, node_i) in enumerate(places):
             if node_i is None:
                 continue
@@ -688,8 +717,34 @@ class EvaRouter:
                 path = _backtrack(parent, node_i, node_j)
                 if path is not None:
                     M[i][j] = [v * self.coarse_margin for v in self._path_resources(_NOMINAL, path)]
-        self._matrices[key] = (places, M)
-        return places, M
+                    MS[i][j] = self._path_devil(path) * self.coarse_margin
+        self._matrices[key] = (places, M, MS)
+        return places, M, MS
+
+    def _path_devil(self, path: list[int]) -> float:
+        """Sum of dust devil susceptibility x walking seconds along a coarse path."""
+        if len(path) < 2 or self.devils is None:
+            return 0.0
+        res = self._coarse(_NOMINAL)[2]
+        src, dst = np.asarray(path[:-1]), np.asarray(path[1:])
+        k = np.fromiter((self._off_to_k[b - a] for a, b in zip(path[:-1], path[1:])),
+                        dtype=np.intp, count=len(path) - 1)
+        return float((res[0, k, src] * self.coarse.devil.ravel()[dst]).sum())
+
+    # ---- the clock of the walk (dust devils) ----------------------------------
+    def _devil_rate_s(self, elapsed_s: float) -> float:
+        """Site-wide encounter rate per second at a moment of the walk, rounded so that legs
+        walked at similar hours share their searches."""
+        if self.devils is None:
+            return 0.0
+        r = self.devils.rate_at(self.devils.hour_after(self.start_h, elapsed_s)) / 3600.0
+        return float(f"{r:.2g}") if r > 0 else 0.0
+
+    def _at_hour(self, strat: Strategy, elapsed_s: float) -> Strategy:
+        """The strategy for a leg walked around `elapsed_s` after the start."""
+        if self.devils is None or not strat.devil_weight:
+            return strat
+        return replace(strat, devil_rate_s=self._devil_rate_s(elapsed_s))
 
     # ---- fine legs -------------------------------------------------------
     def _corridor(self, nodes: list[int], width: int):
@@ -710,7 +765,7 @@ class EvaRouter:
         return (r0, r1, c0, c1), mask[:r1 - r0, :c1 - c0]
 
     def _fine_path(self, a: tuple[int, int], b: tuple[int, int], coarse_nodes: list[int],
-                   strat: Strategy, cost_per_cell: float = 0.0):
+                   strat: Strategy, cost_per_cell: float = 0.0, extra: np.ndarray | None = None):
         """Full-resolution path of cells [(row, col), ...] from a to b, or None.
 
         The heuristic assumes the rest of the way costs per cell what the coarse
@@ -726,6 +781,9 @@ class EvaRouter:
             else:
                 (r0, r1, c0, c1), mask = self._corridor(nodes, width)
                 outside = ~mask
+            if extra is not None:                          # cells closed for this search only
+                e = extra[r0:r1, c0:c1]
+                outside = e if outside is None else outside | e
             win = self.fine.window(r0, r1, c0, c1, outside)
             cost, _ = _edge_arrays(win, strat, self.mission, self.suit, self.rate_ref)
             scale = cost_per_cell or _min_cost_per_cell(cost)
@@ -779,7 +837,7 @@ class EvaRouter:
         if strat is not None:
             out["cost"] = _generalized_cost(strat, t, o2, fl["loose"][j], fl["pen"][j],
                                             fl["rate"][j], np.abs(slope), self.rate_ref,
-                                            self.mission)
+                                            self.mission, fl["devil"][j])
         return out
 
     def _line(self, x0, y0, x1, y1):
@@ -788,7 +846,8 @@ class EvaRouter:
         s = np.arange(n + 1) / n
         return x0 + s * (x1 - x0), y0 + s * (y1 - y0)
 
-    def _smooth(self, cells: list[tuple[int, int]], strat: Strategy) -> list[int]:
+    def _smooth(self, cells: list[tuple[int, int]], strat: Strategy,
+                extra_flat: np.ndarray | None = None) -> list[int]:
         """String pulling. Returns the indices of the cells kept as corners.
 
         A straight line replaces a piece of the grid path when it crosses no
@@ -807,6 +866,8 @@ class EvaRouter:
             if j == i + 1:
                 return True
             w = self._walk(*self._line(xs[i], ys[i], xs[j], ys[j]), strat, margin=True)
+            if extra_flat is not None and bool(extra_flat[w["idx"]].any()):
+                return False
             return not w["blocked"] and float(w["cost"].sum()) <= (cum[j] - cum[i]) * tol + 1e-9
 
         keep, i, last = [0], 0, m - 1
@@ -850,6 +911,43 @@ class EvaRouter:
             corners = [cells[i] for i in self._smooth(cells, strat)]
             self._legs[key] = self._segment(corners)
         return replace(self._legs[key], name_from=name_from, name_to=name_to)
+
+    def leg_avoiding(self, start_m: tuple[float, float], goal_m: tuple[float, float],
+                     closed: np.ndarray, strategy: Strategy | str = "science",
+                     name_from: str = "", name_to: str = "", elapsed_s: float = 0.0) -> RouteSegment:
+        """Route between two points that keeps out of `closed` (bool, site shape), for a
+        hazard that is there now and gone soon (a dust devil's corridor). Nothing is
+        rebuilt: the closed cells are left out of this one search. Raises RuntimeError
+        if the corridor cuts the goal off."""
+        strat = self._at_hour(self._strategy(strategy), elapsed_s)
+        (a, na), (b, nb) = self._place(start_m), self._place(goal_m)
+        if a is None or b is None or na is None or nb is None:
+            raise RuntimeError(f"no route from {start_m} to {goal_m} (point walled in)")
+        closed = closed.copy()
+        closed[a] = False                                  # the walker is where it is
+        if closed[b]:
+            raise RuntimeError(f"{name_to or goal_m} lies inside the closed area")
+        # coarse graph: no edge may enter a coarse cell that holds closed ground
+        f = self.f
+        pad = ((0, self.Rc * f - self.rows), (0, self.Cc * f - self.cols))
+        c_closed = np.pad(closed, pad).reshape(self.Rc, f, self.Cc, f).any(axis=(1, 3)).ravel()
+        c_closed[[na, nb]] = False
+        lists, hscale, _ = self._coarse(strat)
+        lists = tuple(list(ck) for ck in lists)
+        n = self.Rc * self.Cc
+        for v in np.flatnonzero(c_closed):
+            for k, off in enumerate(self._c_offsets):
+                u = int(v) - off
+                if 0 <= u < n:
+                    lists[k][u] = INF
+        path = _astar(lists, self._c_offsets, na, nb, _octile(self.Rc, self.Cc, nb, hscale))
+        if path is None:
+            raise RuntimeError(f"{name_to or goal_m} is cut off by the closed area")
+        cells = self._fine_path(a, b, path, strat, 0.0, extra=closed)
+        if cells is None:
+            raise RuntimeError(f"{name_to or goal_m} is cut off by the closed area")
+        corners = [cells[i] for i in self._smooth(cells, strat, closed.ravel())]
+        return replace(self._segment(corners), name_from=name_from, name_to=name_to)
 
     def _segment(self, corners: list[tuple[int, int]]) -> RouteSegment:
         """Walk the smoothed route and report it."""
@@ -932,15 +1030,28 @@ class EvaRouter:
         return [t, 0.0, o2, wh, float(self.fine.rate[cell]) * t / 3600.0]
 
     def _choose(self, strat: Strategy, values: list[float], stop: list, M: list, budget: list,
-                inflate: float, max_nodes: int = 200_000) -> list[int]:
-        """Best order of target indices (1..n) to visit from node 0 and back within budget."""
+                inflate: float, max_nodes: int = 200_000, MS: list | None = None,
+                stop_s: list | None = None) -> list[int]:
+        """Best order of target indices (1..n) to visit from node 0 and back within budget.
+
+        With dust devils (MS: S x seconds per leg, stop_s: S at each target) the score also
+        counts the expected encounters of the tour, each leg and stop at its own hour, at
+        devil_weight seconds each: the same order can be safe early and risky at noon.
+        """
         n = len(values)
         time_budget = budget[0]
         save_i = {"o2": 2, "dose": 4}.get(strat.saving)
         save_ref = budget[2] if save_i == 2 else self.rate_ref * time_budget / 3600.0
         best_score, best_order, nodes = -INF, [], 0
+        dv = self.devils if (self.devils is not None and strat.devil_weight and MS is not None) else None
 
-        def visit(cur: int, used: list, mask: int, value: float, order: list) -> None:
+        def rate_s(elapsed_s: float) -> float:
+            return dv.rate_at(dv.hour_after(self.start_h, elapsed_s)) / 3600.0
+
+        def leg_exp(a: int, b: int, t0: float, dur: float) -> float:
+            return rate_s(t0 + dur / 2) * MS[a][b] * inflate if dv else 0.0
+
+        def visit(cur: int, used: list, mask: int, value: float, order: list, exp: float) -> None:
             nonlocal best_score, best_order, nodes
             nodes += 1
             back = M[cur][0] if cur else [0.0] * 5
@@ -948,6 +1059,9 @@ class EvaRouter:
             score = value - 0.5 * total[0] / time_budget
             if save_i is not None:
                 score -= strat.saving_weight * total[save_i] / save_ref
+            if dv:
+                e = exp + (leg_exp(cur, 0, used[0], back[0] * inflate) if cur else 0.0)
+                score -= 0.5 * strat.devil_weight * e / time_budget
             if score > best_score:
                 best_score, best_order = score, order
             if nodes > max_nodes:
@@ -957,9 +1071,14 @@ class EvaRouter:
                     continue
                 there = [u + a * inflate + w for u, a, w in zip(used, M[cur][j], stop[j])]
                 if all(t + b * inflate <= lim for t, b, lim in zip(there, M[j][0], budget)):
-                    visit(j, there, mask | 1 << j, value + values[j], order + [j])
+                    e = exp
+                    if dv:
+                        walk = M[cur][j][0] * inflate
+                        e += leg_exp(cur, j, used[0], walk)
+                        e += rate_s(used[0] + walk + stop[j][0] / 2) * stop_s[j] * stop[j][0]
+                    visit(j, there, mask | 1 << j, value + values[j], order + [j], e)
 
-        visit(0, [0.0] * 5, 1, 0.0, [])
+        visit(0, [0.0] * 5, 1, 0.0, [], 0.0)
         return best_order
 
     def plan(self, strategy: Strategy | str = "science", targets: list[Target] | None = None,
@@ -973,9 +1092,11 @@ class EvaRouter:
         strat = self._strategy(strategy)
         cands = list(self.site.targets if targets is None else targets)
         points = [tuple(self.site.start)] + [(t.x_m, t.y_m) for t in cands]
-        places, M = self._matrix(points)
+        places, M, MS = self._matrix(points)
         if places[0][0] is None or places[0][1] is None:
             raise RuntimeError("Старт site.start заблокирован непроходимой зоной.")
+        stop_s = [0.0] + [float(self.fine.devil[places[i + 1][0]]) if places[i + 1][0] else 0.0
+                          for i in range(len(cands))]
 
         sci = self.site.layers["science_score"]
         scores = [0.0] + [float(sci[self.site.to_pixel(t.x_m, t.y_m)]) for t in cands]
@@ -990,14 +1111,15 @@ class EvaRouter:
             if fixed_order:
                 order = [i for i in range(1, len(points)) if stop[i] is not None]
             else:
-                order = self._choose(strat, values, stop, M, budget, inflate)
-            legs = self._plan_legs(strat, order, points, cands)
+                order = self._choose(strat, values, stop, M, budget, inflate, MS=MS, stop_s=stop_s)
+            legs = self._plan_legs(strat, order, points, cands, stop, M, inflate)
             used = self._totals(legs, order, stop)
             over = max(u / lim for u, lim in zip(used, budget))
             if over <= 1.0 or not order or fixed_order:
                 break
             inflate *= over * 1.02            # real legs cost more than estimated: tighten
         plan = self._assemble(strat, cands, order, legs, stop, scores, values, M, places, budget)
+        plan.dust_devils = self._devil_report(plan)
         if check_radio:
             plan.radio = self._radio(plan)
             if plan.radio.get("shadow_m", 0) > 0:
@@ -1012,14 +1134,53 @@ class EvaRouter:
         """The three alternative plans: shielded, eco, science."""
         return {name: self.plan(name, targets, check_radio=check_radio) for name in STRATEGIES}
 
-    def _plan_legs(self, strat, order, points, cands) -> list[RouteSegment]:
+    def _plan_legs(self, strat, order, points, cands, stop=None, M=None, inflate=1.0
+                   ) -> list[RouteSegment]:
+        """Fine legs in walking order. With dust devils each leg is routed with the rate of
+        the hour it is expected to be walked (the clock runs on the legs already planned)."""
         if not order:
             return []
         seq = [0] + order + [0]
         names = ["Start"] + [t.name for t in cands]
-        return [self.leg(points[a], points[b], strat, names[a],
-                         "Return Base" if i == len(seq) - 2 else names[b])
-                for i, (a, b) in enumerate(zip(seq[:-1], seq[1:]))]
+        legs, elapsed = [], 0.0
+        for i, (a, b) in enumerate(zip(seq[:-1], seq[1:])):
+            est = M[a][b][0] * inflate if (M is not None and M[a][b] is not None) else 0.0
+            leg = self.leg(points[a], points[b], self._at_hour(strat, elapsed + est / 2), names[a],
+                           "Return Base" if i == len(seq) - 2 else names[b])
+            legs.append(leg)
+            elapsed += leg.duration_min * 60.0 + (stop[b][0] if (stop is not None and b and stop[b]) else 0.0)
+        return legs
+
+    def walk_timeline(self, plan: MissionPlan) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Route samples (x, y) and the seconds since the start each is reached; the time spent
+        working at a stop shows as two samples at the same place."""
+        xs, ys, ts = [], [], []
+        for i, seg in enumerate(plan.segments):
+            t0 = plan.stops[i]["depart_min"] * 60.0 if i < len(plan.stops) else (ts[-1] if ts else 0.0)
+            for p in seg.profile:
+                xs.append(p["x_m"]); ys.append(p["y_m"]); ts.append(t0 + p["t_min"] * 60.0)
+        return np.asarray(xs), np.asarray(ys), np.asarray(ts)
+
+    def _devil_report(self, plan: MissionPlan, step_h: float = 0.5) -> dict:
+        """Expected dust devil encounters of the plan at its start hour and at other starts."""
+        dv = self.devils
+        if dv is None or not plan.segments:
+            return {}
+        xs, ys, ts = self.walk_timeline(plan)
+        e = dv.exposure(xs, ys, ts, self.start_h)
+        dur_h = (ts[-1] - ts[0]) / MARS_HOUR_S if len(ts) else 0.0
+        # starts that keep the whole walk between 07:00 and 16:30 local time (daylight, margin)
+        starts = [round(float(h), 2) for h in np.arange(7.0, 16.5 - dur_h + 1e-9, step_h)] or [self.start_h]
+        by = dv.exposure_by_start(xs, ys, ts, starts)
+        best = int(np.argmin(by))
+        return {
+            "start_h": round(self.start_h, 2), "duration_h": round(dur_h, 2),
+            "expected": round(e, 4), "probability": round(dv.probability(e), 4),
+            "by_start": [[h, round(v, 4)] for h, v in zip(starts, by)],
+            "best_start_h": starts[best], "best_expected": round(by[best], 4),
+            "peak_hour": int(np.argmax(dv.hourly)), "ls_deg": round(dv.ls_deg, 1),
+            "source": dv.source,
+        }
 
     @staticmethod
     def _totals(legs, order, stop) -> list[float]:
